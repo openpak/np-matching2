@@ -111,3 +111,33 @@ func TestClassifyRealFirmwareHello(t *testing.T) {
 		t.Fatal("ECDHE suite accepted")
 	}
 }
+
+// Real D2R (Switch build under Harbor/Ryujinx, 2026-10) game-server hello: only the first 64 bytes were ever logged
+// (BsdTap). It shows TLS 1.2 in a 288-byte record, a 32-byte session id and a 284-byte handshake body, none of which
+// the 80-byte firmware hello resembles. The tail below is synthetic (typical modern suites and extensions) and
+// completes the record to the logged length.
+func TestClassifyD2RReplayPrefix(t *testing.T) {
+	prefix, _ := hex.DecodeString("16030101200100011C0303E3EC8A6CBB1CF68F0EF30C2D3E3B96B406313D312A4C9B8C81D44EC13781900D205E1E677774F2F15CB72C26F95EBB8707DE6EF84D")
+	if len(prefix) != 64 {
+		t.Fatal("fixture")
+	}
+	if Classify(prefix) != Other {
+		t.Fatal("a truncated D2R hello must not be the firmware")
+	}
+	rec := append([]byte(nil), prefix...)
+	rec = append(rec, make([]byte, 5+288-len(rec))...)
+	// session id (32 bytes) ends at 44+32=76; then suites: ECDHE-RSA-AES128-GCM, ECDHE-RSA-AES256-GCM, CHACHA20, RSA-AES128-GCM
+	suites := []byte{0xc0, 0x2f, 0xc0, 0x30, 0xcc, 0xa8, 0x00, 0x9c, 0x00, 0xff}
+	p := 44 + 32
+	rec[p], rec[p+1] = 0, byte(len(suites))
+	copy(rec[p+2:], suites)
+	p += 2 + len(suites)
+	rec[p], rec[p+1] = 1, 0
+	p += 2
+	rem := len(rec) - p - 2
+	rec[p], rec[p+1] = byte(rem>>8), byte(rem)
+	rec[p+2], rec[p+3], rec[p+4], rec[p+5] = 0x00, 0x0a, 0x00, byte(rem-4) // supported_groups
+	if Classify(rec) != Other {
+		t.Fatal("modern completion classified as firmware")
+	}
+}
