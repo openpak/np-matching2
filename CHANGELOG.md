@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.1.12
+
+0x2001 (second step of CreateJoinRoom) answered with the room-server list, from the firmware's reply parser; unverified live.
+
 ## v0.1.11
 
 `NP_CAPTURE_DIR`: every non-polling request and reply is appended as redacted hex JSON lines (daily file, 0600, 90 days) so a real console's Matching2 traffic can be recorded.

@@ -205,6 +205,12 @@ func (a *Agent) handle0(ctx context.Context, st *conn, f *wire.Frame) []byte {
 		w := wire.World{ID: 1, Rooms: uint16(min(rooms, 0xffff)), RoomMembers: members}
 		return wire.Reply(st.sess.Key, f.Cmd, 0, f.ReqID, wire.WorldList([]wire.World{w}))
 	}
+	if f.Cmd == 0x2001 {
+		// Second step of the room flow: request carries the login tokens 0x23/0x5d and 0x19 (u8); the reply schema is one element 0x02, the
+		// same list of room-server endpoints as in the 0x1209 reply (firmware parser 0x2c20ec). Layout from the parser, not yet seen live.
+		log.Info("matching2 command 0x2001 answered", "bytes", len(f.Raw))
+		return wire.Reply(st.sess.Key, f.Cmd, 0, f.ReqID, wire.ServerList(a.RoomHost, a.RoomPort))
+	}
 	if f.Cmd == wire.CmdUnknown1209 {
 		// First room-family command Terraria sends after "Start Game" (request: server id only). The reply schema needs
 		// only element 0x20 (a 1..512 byte token); 0x3d is echoed as 1. Meaning of the command is not established.
