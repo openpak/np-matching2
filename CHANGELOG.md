@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.2.0
+
+Rooms over the matchmaking core: 0x3200 (CreateJoinRoom) creates a `room` session under the title key (attributes `compat=old-gen-1.2.4`, `console=ps3`, the console's request without tokens in `data`) and
+replies with the five elements the firmware's parser requires (tokens 0x24/0x21, room id 0x3a, room data 0x71, creator as member 0x4b); 0x1202 updates the session data; 0x3202 leaves it.
+Layouts decoded statically from vsh (no console or emulator run yet); field meanings partly inferred from the API structs. The adapter keeps no room state.
+
 ## v0.1.12
 
 0x2001 (second step of CreateJoinRoom) answered with the room-server list, from the firmware's reply parser; unverified live.

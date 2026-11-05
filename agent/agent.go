@@ -32,6 +32,14 @@ type Core interface {
 	Worlds(ctx context.Context, title string) (rooms, members uint32, err error)
 }
 
+// Rooms is the room side of the matchmaking core.
+type Rooms interface {
+	CreateRoom(ctx context.Context, title, account, display string, maxSlot uint32, data []byte) (*Room, error)
+	LeaveRoom(ctx context.Context, session, account string) error
+	SetRoomData(ctx context.Context, session, account string, data []byte) error
+	Heartbeat(ctx context.Context, account string)
+}
+
 // AccountCore verifies a ticket's account and link (np-common coreclient).
 type AccountCore = ticket.AccountCore
 
@@ -44,6 +52,7 @@ type Agent struct {
 	Log     *slog.Logger
 	Stats   Stats
 	Capture *Capture
+	Rooms   Rooms
 	// RoomHost and RoomPort are the room-server endpoint handed to the console in the 0x1209 reply (this agent's plain port).
 	RoomHost string
 	RoomPort uint16
@@ -57,8 +66,10 @@ func (a *Agent) log() *slog.Logger {
 }
 
 type conn struct {
-	comm string
-	sess *Session
+	comm         string
+	sess         *Session
+	room         string // core session id of the room this connection created
+	memberOnline string
 }
 
 // ServePlain handles the plain TCP connection (0x1001, then the session's requests).
@@ -205,6 +216,25 @@ func (a *Agent) handle0(ctx context.Context, st *conn, f *wire.Frame) []byte {
 		w := wire.World{ID: 1, Rooms: uint16(min(rooms, 0xffff)), RoomMembers: members}
 		return wire.Reply(st.sess.Key, f.Cmd, 0, f.ReqID, wire.WorldList([]wire.World{w}))
 	}
+	if a.Rooms != nil && !a.Stats.Quiet("hb"+st.sess.Account) {
+		a.Rooms.Heartbeat(ctx, st.sess.Account)
+	}
+	switch f.Cmd {
+	case 0x3200:
+		return a.createRoom(ctx, log, t, st, f)
+	case 0x3202:
+		if a.Rooms != nil && st.room != "" {
+			a.Rooms.LeaveRoom(ctx, st.room, st.sess.Account)
+			log.Info("matching2 room left", "session", st.room)
+			st.room = ""
+		}
+		return wire.Reply(st.sess.Key, f.Cmd, 0, f.ReqID)
+	case 0x1202:
+		if a.Rooms != nil && st.room != "" {
+			a.Rooms.SetRoomData(ctx, st.room, st.sess.Account, roomBlob(f))
+		}
+		return wire.Reply(st.sess.Key, f.Cmd, 0, f.ReqID)
+	}
 	if f.Cmd == 0x2001 {
 		// Second step of the room flow: request carries the login tokens 0x23/0x5d and 0x19 (u8); the reply schema is one element 0x02, the
 		// same list of room-server endpoints as in the 0x1209 reply (firmware parser 0x2c20ec). Layout from the parser, not yet seen live.
@@ -260,4 +290,49 @@ func (a *Agent) login(ctx context.Context, log *slog.Logger, t Title, f *wire.Fr
 	return wire.Reply(nil, f.Cmd, 0, f.ReqID,
 		wire.TLV(0x14, 5, u32), wire.TLV(0x22, 2, s.Key), wire.TLV(0x23, 2, rnd(16)), wire.TLV(0x5d, 2, rnd(16)),
 		wire.TLV(0x74, 4, life))
+}
+
+// roomBlob is the console's room request without the tokens: it is kept in the session data so the unified service (and a later
+// SearchRoom) can hand it back; the adapter itself stores nothing.
+func roomBlob(f *wire.Frame) []byte {
+	var out []byte
+	for p := f.Body; len(p) >= 4; {
+		id := binary.BigEndian.Uint16(p) & 0xfff
+		n := int(binary.BigEndian.Uint16(p[2:]))
+		if 4+n > len(p) {
+			break
+		}
+		if id != 0x23 && id != 0x5d && id != 0x20 && id != 0x11 && id != 0x15 && id != 0x22 {
+			out = append(out, p[:4+n]...)
+		}
+		p = p[4+n:]
+	}
+	if len(out) > 8000 {
+		out = out[:8000]
+	}
+	return out
+}
+
+// createRoom answers 0x3200 (CreateJoinRoom, third step): creates the room in the matchmaking core and replies with the five elements the
+// firmware requires (tokens, room id, room data, the creator as member 1).
+func (a *Agent) createRoom(ctx context.Context, log *slog.Logger, t Title, st *conn, f *wire.Frame) []byte {
+	if a.Rooms == nil {
+		return nil
+	}
+	maxSlot := uint32(8)
+	if v := f.Elements()[0x3f]; len(v) == 2 {
+		if m := uint32(binary.BigEndian.Uint16(v)); m >= 1 && m <= 64 {
+			maxSlot = m
+		}
+	}
+	room, err := a.Rooms.CreateRoom(ctx, t.Key, st.sess.Account, st.sess.OnlineID, maxSlot, roomBlob(f))
+	if err != nil {
+		log.Error("matching2 create room", "err", err)
+		return nil
+	}
+	st.room = room.ID
+	log.Info("matching2 room created", "session", room.ID, "max_slot", maxSlot, "bytes", len(f.Raw))
+	rd := wire.RoomData{ServerID: 1, WorldID: 1, MaxSlot: uint16(maxSlot)}
+	els := wire.CreateJoinRoomReply(room.RoomID, rd, uint16(room.MemberNo), st.sess.OnlineID, st.sess.OnlineID, rnd(16), rnd(16))
+	return wire.Reply(st.sess.Key, f.Cmd, 0, f.ReqID, els...)
 }

@@ -19,6 +19,19 @@ import (
 	"openpak/np-matching2/wire"
 )
 
+type fakeRooms struct{ created, left, data int }
+
+func (f *fakeRooms) CreateRoom(_ context.Context, title, account, display string, max uint32, data []byte) (*agent.Room, error) {
+	f.created++
+	return &agent.Room{ID: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", RoomID: 0xaaaaaaaabbbbcccc, MemberNo: 1}, nil
+}
+func (f *fakeRooms) LeaveRoom(context.Context, string, string) error { f.left++; return nil }
+func (f *fakeRooms) SetRoomData(context.Context, string, string, []byte) error {
+	f.data++
+	return nil
+}
+func (f *fakeRooms) Heartbeat(context.Context, string) {}
+
 type fakeCore struct{ rooms, members uint32 }
 
 func (f fakeCore) Worlds(context.Context, string) (uint32, uint32, error) {
@@ -42,7 +55,8 @@ func TestHandshake(t *testing.T) {
 	pass := make([]byte, 128)
 	rand.Read(pass)
 	const acct = "11111111-1111-1111-1111-111111111111"
-	a := &agent.Agent{Titles: map[string]agent.Title{"NPWR04270_00": {Key: "terraria", Pass: pass}}, Store: st, Tickets: signer, Core: fakeCore{rooms: 3, members: 5}}
+	fr := &fakeRooms{}
+	a := &agent.Agent{Titles: map[string]agent.Title{"NPWR04270_00": {Key: "terraria", Pass: pass}}, Store: st, Tickets: signer, Core: fakeCore{rooms: 3, members: 5}, Rooms: fr}
 
 	pair := func(h func(net.Conn)) net.Conn {
 		c, s := net.Pipe()
@@ -81,6 +95,27 @@ func TestHandshake(t *testing.T) {
 	}
 	if f, err = c.Call(wire.CmdRenew); err != nil || len(f.Elements()[0x5d]) != 16 {
 		t.Fatalf("renew: %v", err)
+	}
+
+	// room flow: 0x3200 creates a room and answers the five required elements; 0x1202 updates, 0x3202 leaves
+	rf, err := c.Call(0x3200, wire.TLV(0x3f, 4, []byte{0, 4}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	el := rf.Elements()
+	for _, id := range []uint16{0x24, 0x3a, 0x21, 0x71, 0x4b} {
+		if len(el[id]) == 0 {
+			t.Fatalf("0x3200 reply lacks element 0x%x", id)
+		}
+	}
+	if fr.created != 1 || len(el[0x3a]) != 8 || el[0x3a][0] != 0xaa {
+		t.Fatalf("room %v %x", fr, el[0x3a])
+	}
+	if _, err := c.Call(0x1202, wire.TLV(0x3a, 2, el[0x3a])); err != nil || fr.data != 1 {
+		t.Fatalf("0x1202: %v %d", err, fr.data)
+	}
+	if _, err := c.Call(0x3202); err != nil || fr.left != 1 {
+		t.Fatalf("0x3202: %v %d", err, fr.left)
 	}
 
 	// a stranger's key is not answered; a wrong passphrase cannot log in
