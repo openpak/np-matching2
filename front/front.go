@@ -30,23 +30,21 @@ func (k Kind) String() string {
 	return "other"
 }
 
-// Classify reads a TLS record holding a ClientHello. It answers Legacy only for a well-formed hello with
-// no extension block; everything else, including garbage, is Other.
+// Classify reads a TLS record holding a ClientHello. It answers Legacy only for the firmware's shape: every cipher
+// suite in the old 0x00xx block (RSA/DH key exchange, no ECDHE, no TLS 1.3) and at most the signature_algorithms
+// and renegotiation_info extensions. The firmware 4.93 hello is 80 bytes: TLS 1.2, suites 003d 003c 0035 002f 000a
+// 0005 0004 00ff, one signature_algorithms extension (captured in Pier, 2026-11-05). A modern client (D2R) offers
+// ECDHE suites and several more extensions. Anything malformed is Other.
 func Classify(rec []byte) Kind {
 	if len(rec) < 9 || rec[0] != 0x16 || rec[5] != 0x01 {
 		return Other
 	}
 	hs := rec[5:]
 	n := int(hs[1])<<16 | int(hs[2])<<8 | int(hs[3])
-	if 4+n > len(hs) {
+	if 4+n > len(hs) || n < 35 {
 		return Other
 	}
-	b := hs[4 : 4+n]
-	// version(2) random(32)
-	if len(b) < 34 {
-		return Other
-	}
-	b = b[34:]
+	b := hs[4 : 4+n][34:] // after version and random
 	if len(b) < 1 || len(b) < 1+int(b[0]) {
 		return Other
 	}
@@ -55,8 +53,13 @@ func Classify(rec []byte) Kind {
 		return Other
 	}
 	cs := int(binary.BigEndian.Uint16(b))
-	if len(b) < 2+cs {
+	if cs == 0 || cs%2 != 0 || len(b) < 2+cs {
 		return Other
+	}
+	for i := 0; i < cs; i += 2 {
+		if b[2+i] != 0x00 {
+			return Other
+		}
 	}
 	b = b[2+cs:]
 	if len(b) < 1 || len(b) < 1+int(b[0]) {
@@ -66,7 +69,21 @@ func Classify(rec []byte) Kind {
 	if len(b) == 0 {
 		return Legacy
 	}
-	return Other
+	if len(b) < 2 || int(binary.BigEndian.Uint16(b)) != len(b)-2 {
+		return Other
+	}
+	ext := b[2:]
+	for len(ext) > 0 {
+		if len(ext) < 4 {
+			return Other
+		}
+		t, l := binary.BigEndian.Uint16(ext), int(binary.BigEndian.Uint16(ext[2:]))
+		if 4+l > len(ext) || (t != 13 && t != 0xff01) {
+			return Other
+		}
+		ext = ext[4+l:]
+	}
+	return Legacy
 }
 
 // SNI returns the server name of a ClientHello record, or "".

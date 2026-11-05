@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.1.3
+
+Fix: the firmware's real hello (TLS 1.2, eight RSA-kex suites incl. the 00ff SCSV, one signature_algorithms extension; 80 bytes) was classified as
+not-firmware and sent down the D2R path, so the PS3 login never reached the agent. Classifier now accepts old-block suites plus
+signature_algorithms/renegotiation_info only; tested with the captured hello.
+
+## v0.1.2
+
+Short hellos are logged (hex).
+
 ## v0.1.1
 
 The front routes a hello that names the Matching2 host (SNI) to the agent as well, whatever extensions it carries.

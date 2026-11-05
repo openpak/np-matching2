@@ -2,6 +2,7 @@ package front
 
 import (
 	"crypto/tls"
+	"encoding/hex"
 	"net"
 	"testing"
 	"time"
@@ -94,5 +95,19 @@ func TestSNI(t *testing.T) {
 	}
 	if SNI(legacyHello()) != "" || SNI(nil) != "" {
 		t.Fatal("legacy hello has no SNI")
+	}
+}
+
+// The real firmware 4.93 ClientHello, captured from Pier on 2026-11-05 (random zeroed).
+func TestClassifyRealFirmwareHello(t *testing.T) {
+	h, _ := hex.DecodeString("160303004b0100004703036aecc0f6389656a2301f8c8941f6daf1caa36e41830883068753dab63583f577000010003d003c0035002f000a0005000400ff0100000e000d000a00080401060105010201")
+	if len(h) != 80 || Classify(h) != Legacy {
+		t.Fatalf("len %d, kind %v", len(h), Classify(h))
+	}
+	// the same hello with an ECDHE suite or a supported_groups extension is not the firmware
+	e := append([]byte(nil), h...)
+	e[43+0] = 0xc0
+	if Classify(e) != Other {
+		t.Fatal("ECDHE suite accepted")
 	}
 }
