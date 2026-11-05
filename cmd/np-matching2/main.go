@@ -105,7 +105,7 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	go front.Serve(tl, front.Handlers{Legacy: legacy, Other: other, Log: log})
+	go front.Serve(tl, front.Handlers{Legacy: legacy, Other: other, Log: log, AgentHost: ca.Fallback})
 
 	mux := http.NewServeMux()
 	a.Register(mux)

@@ -77,3 +77,22 @@ func TestPeekReplays(t *testing.T) {
 		t.Fatal("replay lost bytes")
 	}
 }
+
+func TestSNI(t *testing.T) {
+	a, b := net.Pipe()
+	got := make(chan []byte, 1)
+	go func() {
+		buf := make([]byte, 4096)
+		n, _ := b.Read(buf)
+		got <- buf[:n]
+		b.Close()
+	}()
+	go tls.Client(a, &tls.Config{ServerName: "matching.np.community.playstation.net", InsecureSkipVerify: true}).Handshake()
+	rec := <-got
+	if SNI(rec) != "matching.np.community.playstation.net" {
+		t.Fatalf("sni %q", SNI(rec))
+	}
+	if SNI(legacyHello()) != "" || SNI(nil) != "" {
+		t.Fatal("legacy hello has no SNI")
+	}
+}

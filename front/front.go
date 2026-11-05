@@ -68,6 +68,55 @@ func Classify(rec []byte) Kind {
 	return Other
 }
 
+// SNI returns the server name of a ClientHello record, or "".
+func SNI(rec []byte) string {
+	if len(rec) < 9 || rec[0] != 0x16 || rec[5] != 0x01 {
+		return ""
+	}
+	hs := rec[5:]
+	n := int(hs[1])<<16 | int(hs[2])<<8 | int(hs[3])
+	if 4+n > len(hs) || n < 34 {
+		return ""
+	}
+	b := hs[4+34 : 4+n]
+	skip := func(lenBytes int) bool {
+		if len(b) < lenBytes {
+			return false
+		}
+		l := int(b[0])
+		if lenBytes == 2 {
+			l = int(binary.BigEndian.Uint16(b))
+		}
+		if len(b) < lenBytes+l {
+			return false
+		}
+		b = b[lenBytes+l:]
+		return true
+	}
+	if !skip(1) || !skip(2) || !skip(1) || len(b) < 2 {
+		return ""
+	}
+	ext := b[2:]
+	if int(binary.BigEndian.Uint16(b)) < len(ext) {
+		ext = ext[:binary.BigEndian.Uint16(b)]
+	}
+	for len(ext) >= 4 {
+		t, l := binary.BigEndian.Uint16(ext), int(binary.BigEndian.Uint16(ext[2:]))
+		if 4+l > len(ext) {
+			return ""
+		}
+		if t == 0 && l >= 5 {
+			d := ext[4 : 4+l]
+			nl := int(binary.BigEndian.Uint16(d[3:5]))
+			if 5+nl <= len(d) {
+				return string(d[5 : 5+nl])
+			}
+		}
+		ext = ext[4+l:]
+	}
+	return ""
+}
+
 // Peek reads the first TLS record of c without losing it: it returns the bytes and a conn that replays them.
 func Peek(c net.Conn, wait time.Duration) ([]byte, net.Conn, error) {
 	c.SetReadDeadline(time.Now().Add(wait))
@@ -101,6 +150,8 @@ type Handlers struct {
 	Legacy func(net.Conn) // the Matching2 agent's TLS side
 	Other  func(net.Conn) // the previous no-SNI behaviour
 	Log    *slog.Logger
+	// AgentHost is the Matching2 hostname: a hello that names it goes to Legacy whatever it carries.
+	AgentHost string
 }
 
 // Serve accepts until the listener closes.
@@ -121,6 +172,9 @@ func (h Handlers) handle(c net.Conn) {
 		return
 	}
 	k := Classify(rec)
+	if h.AgentHost != "" && SNI(rec) == h.AgentHost {
+		k = Legacy
+	}
 	if h.Log != nil {
 		h.Log.Info("no-SNI connection", "kind", k.String(), "hello_bytes", len(rec))
 	}
