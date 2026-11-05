@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.1.7
+
+GetUserInfoList entries carry the user's display name (0x0c) as well as the NpId.
+
 ## v0.1.6
 
 0x1007 = GetUserInfoList is answered (each requested user with its NpId only; no joined rooms yet).

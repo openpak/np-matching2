@@ -206,7 +206,9 @@ func NpID(onlineID string) []byte {
 func UserInfoList(onlineIDs []string) []byte {
 	list := []byte{0x00, 0x5e, byte(len(onlineIDs) >> 8), byte(len(onlineIDs))}
 	for _, id := range onlineIDs {
-		list = append(list, TLV(0x5e, 0, TLV(0x0b, 0, NpID(id)))...)
+		name := make([]byte, 48)
+		copy(name, id)
+		list = append(list, TLV(0x5e, 0, append(TLV(0x0b, 0, NpID(id)), TLV(0x0c, 1, name)...))...)
 	}
 	return TLV(0x02, 0, list)
 }
