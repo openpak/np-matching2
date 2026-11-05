@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.1.4
+
+Unimplemented commands are logged with the request hex (secrets redacted), so room commands can be captured from a real game.
+
 ## v0.1.3
 
 Fix: the firmware's real hello (TLS 1.2, eight RSA-kex suites incl. the 00ff SCSV, one signature_algorithms extension; 80 bytes) was classified as

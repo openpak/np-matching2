@@ -157,3 +157,22 @@ func WorldList(ws []World) []byte {
 	}
 	return TLV(0x02, 0, list)
 }
+
+// Redacted returns a copy of the packet with the values of secret elements (NP ticket 0x11, passphrase 0x15, session key 0x22) overwritten.
+func (f *Frame) Redacted() []byte {
+	out := append([]byte(nil), f.Raw...)
+	for q := out[HeaderLen:]; len(q) >= 4; {
+		id := binary.BigEndian.Uint16(q) & 0xfff
+		l := int(binary.BigEndian.Uint16(q[2:]))
+		if 4+l > len(q) {
+			break
+		}
+		if id == 0x11 || id == 0x15 || id == 0x22 {
+			for i := 0; i < l; i++ {
+				q[4+i] = 0xAA
+			}
+		}
+		q = q[4+l:]
+	}
+	return out
+}

@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"crypto/subtle"
 	"encoding/binary"
+	"encoding/hex"
 	"io"
 	"log/slog"
 	"net"
@@ -166,7 +167,12 @@ func (a *Agent) handle(ctx context.Context, st *conn, f *wire.Frame) []byte {
 	for id := range el {
 		ids = append(ids, id)
 	}
-	log.Warn("matching2 unimplemented command", "elements", ids, "bytes", len(f.Raw))
+	raw := f.Redacted()
+	if len(raw) > 2048 {
+		raw = raw[:2048]
+	}
+	// Capture of a command nobody has implemented yet: the request layout is what the next step needs. Secrets are redacted.
+	log.Warn("matching2 unimplemented command", "elements", ids, "bytes", len(f.Raw), "hex", hex.EncodeToString(raw))
 	return nil
 }
 
