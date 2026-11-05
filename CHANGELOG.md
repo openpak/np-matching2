@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.1.11
+
+`NP_CAPTURE_DIR`: every non-polling request and reply is appended as redacted hex JSON lines (daily file, 0600, 90 days) so a real console's Matching2 traffic can be recorded.
+
 ## v0.1.10
 
 0x1209 reply carries the room-server list (0x02: one 0x0a entry = port + host name). Found with Pier's PPU trace: with no entry vsh dereferences a null pointer in its done handler (0x29ae9c) and the emulator freezes.

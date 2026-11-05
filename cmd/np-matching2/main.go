@@ -77,6 +77,10 @@ func run() error {
 	defer conn.Close()
 	a := &agent.Agent{Titles: titles, Store: store, Tickets: signer, Account: acct, Core: mm, Log: log, RoomHost: nphttp.Env("NP_MATCHING_HOST", "matching.np.community.playstation.net"), RoomPort: 3480}
 
+	if dir := os.Getenv("NP_CAPTURE_DIR"); dir != "" {
+		os.MkdirAll(dir, 0o700)
+		a.Capture = &agent.Capture{Dir: dir}
+	}
 	go a.Stats.Run(log, ctx.Done())
 	go func() {
 		for range time.Tick(time.Hour) {

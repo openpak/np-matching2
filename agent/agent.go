@@ -43,6 +43,7 @@ type Agent struct {
 	Core    Core
 	Log     *slog.Logger
 	Stats   Stats
+	Capture *Capture
 	// RoomHost and RoomPort are the room-server endpoint handed to the console in the 0x1209 reply (this agent's plain port).
 	RoomHost string
 	RoomPort uint16
@@ -117,6 +118,11 @@ func (a *Agent) handle(ctx context.Context, st *conn, f *wire.Frame) []byte {
 	start := time.Now()
 	out := a.handle0(ctx, st, f)
 	if f.Kind == wire.KindRequest {
+		acct := ""
+		if st.sess != nil {
+			acct = st.sess.Account
+		}
+		a.Capture.Record(f.Cmd, st.comm, acct, f.Redacted(), out)
 		a.Stats.Observe(f.Cmd, out != nil, time.Since(start))
 	}
 	return out
