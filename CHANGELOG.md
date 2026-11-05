@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.2.4
+
+testclient offers the RSA key-exchange suites the agent's TLS requires.
+
 ## v0.2.3
 
 `np-matching2 testclient <online id>`: a headless second player run inside the container (ticket issued with the agent's key for an existing test account) that logs in, searches and joins the newest room; for the two-client test.
