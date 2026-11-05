@@ -97,6 +97,14 @@ func (a *Agent) serve(c net.Conn, secure bool) {
 	}
 }
 
+func elementIDs(el map[uint16][]byte) []uint16 {
+	ids := make([]uint16, 0, len(el))
+	for id := range el {
+		ids = append(ids, id)
+	}
+	return ids
+}
+
 func rnd(n int) []byte { b := make([]byte, n); rand.Read(b); return b }
 
 // handle answers one request. Every request is logged with its command, title and element ids; never values.
@@ -125,6 +133,12 @@ func (a *Agent) handle(ctx context.Context, st *conn, f *wire.Frame) []byte {
 		return wire.Reply(t.Pass[:16], f.Cmd, 0, f.ReqID, wire.TLV(0x1d, 0, []byte{0, 1, 0}))
 	case wire.CmdLogin:
 		return a.login(ctx, log, t, f, el)
+	}
+	if f.Cmd == 0x1007 && f.Verify(t.Pass[:16]) {
+		// 0x1007 is MAC'd with the passphrase like 0x1001 (the firmware's MAC table): capture it, not implemented yet.
+		raw := f.Redacted()
+		log.Warn("matching2 unimplemented command", "elements", elementIDs(el), "bytes", len(f.Raw), "hex", hex.EncodeToString(raw), "mac", "passphrase")
+		return nil
 	}
 	// Everything else is MAC'd with the session key of a login.
 	if st.sess == nil {

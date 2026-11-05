@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.1.5
+
+0x1007 (MAC'd with the passphrase, seen from Terraria's Join Game screen) is captured as redacted hex.
+
 ## v0.1.4
 
 Unimplemented commands are logged with the request hex (secrets redacted), so room commands can be captured from a real game.
