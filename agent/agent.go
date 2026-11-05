@@ -38,6 +38,8 @@ type Rooms interface {
 	LeaveRoom(ctx context.Context, session, account string) error
 	SetRoomData(ctx context.Context, session, account string, data []byte) error
 	Heartbeat(ctx context.Context, account string)
+	SearchRooms(ctx context.Context, title, compat string, limit uint32) ([]RoomInfo, error)
+	JoinRoom(ctx context.Context, session, account, display string) (*JoinedRoom, error)
 }
 
 // AccountCore verifies a ticket's account and link (np-common coreclient).
@@ -222,6 +224,10 @@ func (a *Agent) handle0(ctx context.Context, st *conn, f *wire.Frame) []byte {
 	switch f.Cmd {
 	case 0x3200:
 		return a.createRoom(ctx, log, t, st, f)
+	case 0x1200, 0x120c:
+		return a.searchRooms(ctx, log, t, st, f)
+	case 0x3201:
+		return a.joinRoom(ctx, log, t, st, f)
 	case 0x3202:
 		if a.Rooms != nil && st.room != "" {
 			a.Rooms.LeaveRoom(ctx, st.room, st.sess.Account)
@@ -334,5 +340,72 @@ func (a *Agent) createRoom(ctx context.Context, log *slog.Logger, t Title, st *c
 	log.Info("matching2 room created", "session", room.ID, "max_slot", maxSlot, "bytes", len(f.Raw))
 	rd := wire.RoomData{ServerID: 1, WorldID: 1, MaxSlot: uint16(maxSlot)}
 	els := wire.CreateJoinRoomReply(room.RoomID, rd, uint16(room.MemberNo), st.sess.OnlineID, st.sess.OnlineID, rnd(16), rnd(16))
+	return wire.Reply(st.sess.Key, f.Cmd, 0, f.ReqID, els...)
+}
+
+// compatOf is the compatibility group of the searcher: this adapter serves PS3 only, so the group is forced (never taken from the request).
+const compatPS3 = "old-gen-1.2.4"
+
+// searchRooms answers SearchRoom (0x1200/0x120c). The request's filters are not decoded yet (INFERRED: it lists every open room of the group);
+// the reply is the 0x03 container of RoomDataExternal items (layout from the firmware parser, field meanings inferred).
+func (a *Agent) searchRooms(ctx context.Context, log *slog.Logger, t Title, st *conn, f *wire.Frame) []byte {
+	if a.Rooms == nil {
+		return nil
+	}
+	rooms, err := a.Rooms.SearchRooms(ctx, t.Key, compatPS3, 20)
+	if err != nil {
+		log.Error("matching2 search", "err", err)
+		return nil
+	}
+	items := make([]wire.SearchItem, 0, len(rooms))
+	for _, r := range rooms {
+		items = append(items, wire.SearchItem{RoomID: r.RoomID, MaxSlot: uint16(r.Max), Owner: r.Owner})
+	}
+	log.Info("matching2 search", "rooms", len(items), "bytes", len(f.Raw))
+	return wire.Reply(st.sess.Key, f.Cmd, 0, f.ReqID, wire.SearchRoomReply(items))
+}
+
+// joinRoom answers JoinRoom (0x3201). INFERRED: how the request names the room is not decoded; candidates are u16 elements (0x3e, 0x2e, 0x3d) and an 8-byte 0x3a,
+// matched against the room ids of the open rooms; with no match it falls back to the newest open room (logged), so a one-room test works.
+func (a *Agent) joinRoom(ctx context.Context, log *slog.Logger, t Title, st *conn, f *wire.Frame) []byte {
+	if a.Rooms == nil {
+		return nil
+	}
+	rooms, err := a.Rooms.SearchRooms(ctx, t.Key, compatPS3, 50)
+	if err != nil || len(rooms) == 0 {
+		log.Warn("matching2 join: no room", "err", err)
+		return nil
+	}
+	want := map[uint16]bool{}
+	el := f.Elements()
+	for _, id := range []uint16{0x3e, 0x2e, 0x3d} {
+		if v := el[id]; len(v) == 2 {
+			want[binary.BigEndian.Uint16(v)] = true
+		}
+	}
+	pick, how := rooms[0], "fallback-newest"
+	for _, r := range rooms {
+		if v := el[0x3a]; len(v) == 8 && binary.BigEndian.Uint64(v) == r.RoomID {
+			pick, how = r, "room-id"
+			break
+		}
+		if want[uint16(r.RoomID)] || want[uint16(r.RoomID>>16)] || want[uint16(r.RoomID>>32)] {
+			pick, how = r, "u16-match"
+			break
+		}
+	}
+	j, err := a.Rooms.JoinRoom(ctx, pick.ID, st.sess.Account, st.sess.OnlineID)
+	if err != nil {
+		log.Warn("matching2 join refused", "err", err)
+		return nil
+	}
+	st.room = j.ID
+	log.Info("matching2 room joined", "session", j.ID, "by", how, "member", j.MemberNo)
+	members := make([]wire.MemberInfo, 0, len(j.Members))
+	for _, m := range j.Members {
+		members = append(members, wire.MemberInfo{No: m.No, Name: m.Name})
+	}
+	rd := wire.RoomData{ServerID: 1, WorldID: 1, MaxSlot: uint16(j.Max)}
+	els := wire.JoinRoomReply(uint16(j.MemberNo), j.RoomID, rd, members, rnd(16), rnd(16))
 	return wire.Reply(st.sess.Key, f.Cmd, 0, f.ReqID, els...)
 }

@@ -55,12 +55,14 @@ type Room struct {
 	MemberNo uint32
 }
 
+// roomIDOf is the 64-bit room id the console sees. The firmware builds it as serverId<<48 | a<<32 | b<<16 | c from three u16 on the wire
+// (inferred from the search-result parser, vsh 0x2bd548), so the id is server 1 plus the first 48 bits of the session id.
 func roomIDOf(session string) uint64 {
 	b, err := hex.DecodeString(strings.ReplaceAll(session, "-", ""))
 	if err != nil || len(b) < 8 {
 		return 0
 	}
-	return binary.BigEndian.Uint64(b[:8])
+	return 1<<48 | binary.BigEndian.Uint64(append([]byte{0, 0}, b[:6]...))
 }
 
 // CreateRoom opens a Terraria room for the account: kind room under the neutral title key, attributes for the unified service
@@ -72,6 +74,7 @@ func (m *MatchmakingCore) CreateRoom(ctx context.Context, title, account, displa
 		Attrs: []*pb.Attr{
 			{Name: "compat", Type: pb.AttrType_ATTR_TYPE_STRING, StringValue: "old-gen-1.2.4", Searchable: true},
 			{Name: "console", Type: pb.AttrType_ATTR_TYPE_STRING, StringValue: "ps3", Searchable: true},
+			{Name: "owner_name", Type: pb.AttrType_ATTR_TYPE_STRING, StringValue: display, Searchable: true},
 		},
 	})
 	if err != nil {
@@ -93,4 +96,64 @@ func (m *MatchmakingCore) SetRoomData(ctx context.Context, session, account stri
 
 func (m *MatchmakingCore) Heartbeat(ctx context.Context, account string) {
 	m.C.Heartbeat(m.ctx(ctx), &pb.HeartbeatRequest{AccountId: account})
+}
+
+// RoomInfo is one search result.
+type RoomInfo struct {
+	ID      string
+	RoomID  uint64
+	Owner   string
+	Max     uint32
+	Members uint32
+}
+
+// SearchRooms lists open rooms of the title in the searcher's compatibility group (forced: a PS3 only sees old-gen-1.2.4 rooms).
+func (m *MatchmakingCore) SearchRooms(ctx context.Context, title, compat string, limit uint32) ([]RoomInfo, error) {
+	res, err := m.C.SearchSessions(m.ctx(ctx), &pb.SearchSessionsRequest{
+		Title: &pb.TitleRef{Network: "np", Title: title}, Network: "np", Kind: "room", OnlyWithFreeSlots: true, Limit: limit,
+		Filters: []*pb.Filter{{Attr: "compat", Op: "eq", IsString: true, StringValue: compat}},
+	})
+	if err != nil {
+		return nil, err
+	}
+	var out []RoomInfo
+	for _, x := range res.GetSessions() {
+		ri := RoomInfo{ID: x.GetId(), RoomID: roomIDOf(x.GetId()), Max: x.GetMaxMembers()}
+		for _, a := range x.GetAttrs() {
+			switch a.GetName() {
+			case "owner_name":
+				ri.Owner = a.GetStringValue()
+			case "$members":
+				ri.Members = uint32(a.GetIntValue())
+			}
+		}
+		out = append(out, ri)
+	}
+	return out, nil
+}
+
+// JoinedRoom is a session the account has joined.
+type JoinedRoom struct {
+	ID       string
+	RoomID   uint64
+	MemberNo uint32
+	Max      uint32
+	Members  []RoomMember
+}
+
+type RoomMember struct {
+	No   uint32
+	Name string
+}
+
+func (m *MatchmakingCore) JoinRoom(ctx context.Context, session, account, display string) (*JoinedRoom, error) {
+	res, err := m.C.JoinSession(m.ctx(ctx), &pb.JoinSessionRequest{SessionId: session, AccountId: account, DisplayName: display, Network: "np"})
+	if err != nil {
+		return nil, err
+	}
+	j := &JoinedRoom{ID: session, RoomID: roomIDOf(session), MemberNo: res.GetMemberNo(), Max: res.GetSession().GetMaxMembers()}
+	for _, mm := range res.GetSession().GetMembers() {
+		j.Members = append(j.Members, RoomMember{No: mm.GetMemberNo(), Name: mm.GetDisplayName()})
+	}
+	return j, nil
 }

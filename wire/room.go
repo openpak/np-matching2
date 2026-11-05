@@ -66,3 +66,49 @@ func CreateJoinRoomReply(roomID uint64, rd RoomData, memberID uint16, onlineID, 
 	id := binary.BigEndian.AppendUint64(nil, roomID)
 	return [][]byte{TLV(0x24, 2, tok24), TLV(0x3a, 2, id), TLV(0x21, 2, tok21), rd.Element(), Member(memberID, onlineID, name)}
 }
+
+// SearchItem is one 0x45 item of a SearchRoom reply (RoomDataExternal). Wire layout from vsh 0x2bd548: three u16 (the room id's low 48 bits),
+// u32 (flag attr, inferred), u16 (max slot, inferred), the owner's 24-byte NpId, then TLVs; 0x41 (32 bytes) is required.
+type SearchItem struct {
+	RoomID  uint64
+	MaxSlot uint16
+	Owner   string
+}
+
+func (r SearchItem) element() []byte {
+	b := make([]byte, 0, 0x24+36)
+	b = binary.BigEndian.AppendUint16(b, uint16(r.RoomID>>32))
+	b = binary.BigEndian.AppendUint16(b, uint16(r.RoomID>>16))
+	b = binary.BigEndian.AppendUint16(b, uint16(r.RoomID))
+	b = binary.BigEndian.AppendUint32(b, 0)
+	b = binary.BigEndian.AppendUint16(b, r.MaxSlot)
+	b = append(b, NpID(r.Owner)...)
+	b = append(b, TLV(0x41, 7, make([]byte, 32))...)
+	return TLV(0x45, 0, b)
+}
+
+// SearchRoomReply is the 0x03 element: [u16 0x0045][u16 count][u16 start][u16 total] + items (vsh 0x2bdaa8).
+func SearchRoomReply(items []SearchItem) []byte {
+	b := []byte{0x00, 0x45, byte(len(items) >> 8), byte(len(items)), 0, 0, byte(len(items) >> 8), byte(len(items))}
+	for _, it := range items {
+		b = append(b, it.element()...)
+	}
+	return TLV(0x03, 0, b)
+}
+
+// JoinRoomReply holds the six required elements of a 0x3201 reply (vsh 0x2c602c): 0x16 my member id, tokens, room id, room data, and 0x02 = list of
+// every member (0x4b).
+func JoinRoomReply(myMember uint16, roomID uint64, rd RoomData, members []MemberInfo, tok24, tok21 []byte) [][]byte {
+	rd.RoomID = roomID
+	id := binary.BigEndian.AppendUint64(nil, roomID)
+	list := []byte{0x00, 0x4b, byte(len(members) >> 8), byte(len(members))}
+	for _, m := range members {
+		list = append(list, Member(uint16(m.No), m.Name, m.Name)...)
+	}
+	return [][]byte{TLV(0x16, 4, binary.BigEndian.AppendUint16(nil, myMember)), TLV(0x24, 2, tok24), TLV(0x3a, 2, id), TLV(0x21, 2, tok21), rd.Element(), TLV(0x02, 0, list)}
+}
+
+type MemberInfo struct {
+	No   uint32
+	Name string
+}

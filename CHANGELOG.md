@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.2.1
+
+SearchRoom (0x1200/0x120c) and JoinRoom (0x3201) over the core. Search lists the open rooms of the title in the searcher's group (`compat` forced to `old-gen-1.2.4`);
+rooms carry an `owner_name` attribute. Join resolves the room from the request (candidates documented in the code) with a logged fallback to the newest room, and replies with the six elements the
+firmware requires (member id 0x16, tokens, room id, room data, member list). Room id = server 1 << 48 | first 48 bits of the session id. **INFERRED** (to be confirmed by the first real capture): the
+SearchRoom request filters (ignored), the way JoinRoom names its room, the RoomDataExternal head fields (flag attr, max slot) and the room-data head. Tested against a real matchmaking core.
+
 ## v0.2.0
 
 Rooms over the matchmaking core: 0x3200 (CreateJoinRoom) creates a `room` session under the title key (attributes `compat=old-gen-1.2.4`, `console=ps3`, the console's request without tokens in `data`) and

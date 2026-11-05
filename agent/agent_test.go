@@ -31,6 +31,12 @@ func (f *fakeRooms) SetRoomData(context.Context, string, string, []byte) error {
 	return nil
 }
 func (f *fakeRooms) Heartbeat(context.Context, string) {}
+func (f *fakeRooms) SearchRooms(context.Context, string, string, uint32) ([]agent.RoomInfo, error) {
+	return []agent.RoomInfo{{ID: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", RoomID: 0x0001aaaaaaaabbbb, Owner: "Host", Max: 4, Members: 1}}, nil
+}
+func (f *fakeRooms) JoinRoom(context.Context, string, string, string) (*agent.JoinedRoom, error) {
+	return &agent.JoinedRoom{ID: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", RoomID: 0x0001aaaaaaaabbbb, MemberNo: 2, Max: 4, Members: []agent.RoomMember{{No: 1, Name: "Host"}, {No: 2, Name: "Me"}}}, nil
+}
 
 type fakeCore struct{ rooms, members uint32 }
 
@@ -110,6 +116,19 @@ func TestHandshake(t *testing.T) {
 	}
 	if fr.created != 1 || len(el[0x3a]) != 8 || el[0x3a][0] != 0xaa {
 		t.Fatalf("room %v %x", fr, el[0x3a])
+	}
+	sf, err := c.Call(0x1200)
+	if err != nil || len(sf.Elements()[0x03]) < 8+4+0x24+36 {
+		t.Fatalf("search: %v %x", err, sf.Elements()[0x03])
+	}
+	jf, err := c.Call(0x3201, wire.TLV(0x3e, 4, []byte{0xbb, 0xbb}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []uint16{0x16, 0x24, 0x3a, 0x21, 0x71, 0x02} {
+		if len(jf.Elements()[id]) == 0 {
+			t.Fatalf("0x3201 reply lacks 0x%x", id)
+		}
 	}
 	if _, err := c.Call(0x1202, wire.TLV(0x3a, 2, el[0x3a])); err != nil || fr.data != 1 {
 		t.Fatalf("0x1202: %v %d", err, fr.data)
