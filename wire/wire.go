@@ -176,3 +176,37 @@ func (f *Frame) Redacted() []byte {
 	}
 	return out
 }
+
+// All returns every value of a repeated element, in order.
+func (f *Frame) All(id uint16) [][]byte {
+	var out [][]byte
+	for p := f.Body; len(p) >= 4; {
+		n := int(binary.BigEndian.Uint16(p[2:]))
+		if 4+n > len(p) {
+			break
+		}
+		if binary.BigEndian.Uint16(p)&0xfff == id {
+			out = append(out, p[4:4+n])
+		}
+		p = p[4+n:]
+	}
+	return out
+}
+
+// NpID is the 24-byte element 0x0b: the online id (16 bytes, NUL padded) and 8 option bytes.
+func NpID(onlineID string) []byte {
+	b := make([]byte, 24)
+	copy(b, onlineID)
+	copy(b[16:], "ptnpps3")
+	return b
+}
+
+// UserInfoList encodes the 0x02 element of a 0x1007 reply: one 0x5e entry per user, each holding only its NpId
+// (no joined rooms yet).
+func UserInfoList(onlineIDs []string) []byte {
+	list := []byte{0x00, 0x5e, byte(len(onlineIDs) >> 8), byte(len(onlineIDs))}
+	for _, id := range onlineIDs {
+		list = append(list, TLV(0x5e, 0, TLV(0x0b, 0, NpID(id)))...)
+	}
+	return TLV(0x02, 0, list)
+}

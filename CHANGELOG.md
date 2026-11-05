@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.1.6
+
+0x1007 = GetUserInfoList is answered (each requested user with its NpId only; no joined rooms yet).
+
 ## v0.1.5
 
 0x1007 (MAC'd with the passphrase, seen from Terraria's Join Game screen) is captured as redacted hex.

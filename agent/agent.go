@@ -135,10 +135,14 @@ func (a *Agent) handle(ctx context.Context, st *conn, f *wire.Frame) []byte {
 		return a.login(ctx, log, t, f, el)
 	}
 	if f.Cmd == 0x1007 && f.Verify(t.Pass[:16]) {
-		// 0x1007 is MAC'd with the passphrase like 0x1001 (the firmware's MAC table): capture it, not implemented yet.
-		raw := f.Redacted()
-		log.Warn("matching2 unimplemented command", "elements", elementIDs(el), "bytes", len(f.Raw), "hex", hex.EncodeToString(raw), "mac", "passphrase")
-		return nil
+		// GetUserInfoList: MAC'd with the passphrase like 0x1001. Elements: 0x0e once per user (online id), 0x05 once per requested
+		// info attribute id (u16). The reply lists each user with only its NpId: nobody hosts a room yet.
+		var ids []string
+		for _, u := range f.All(0x0e) {
+			ids = append(ids, string(u))
+		}
+		log.Info("matching2 request", "users", len(ids))
+		return wire.Reply(t.Pass[:16], f.Cmd, 0, f.ReqID, wire.UserInfoList(ids))
 	}
 	// Everything else is MAC'd with the session key of a login.
 	if st.sess == nil {
