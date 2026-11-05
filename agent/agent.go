@@ -8,6 +8,7 @@ import (
 	"crypto/subtle"
 	"encoding/binary"
 	"encoding/hex"
+	"fmt"
 	"io"
 	"log/slog"
 	"net"
@@ -41,6 +42,7 @@ type Agent struct {
 	Account AccountCore
 	Core    Core
 	Log     *slog.Logger
+	Stats   Stats
 }
 
 func (a *Agent) log() *slog.Logger {
@@ -109,6 +111,15 @@ func rnd(n int) []byte { b := make([]byte, n); rand.Read(b); return b }
 
 // handle answers one request. Every request is logged with its command, title and element ids; never values.
 func (a *Agent) handle(ctx context.Context, st *conn, f *wire.Frame) []byte {
+	start := time.Now()
+	out := a.handle0(ctx, st, f)
+	if f.Kind == wire.KindRequest {
+		a.Stats.Observe(f.Cmd, out != nil, time.Since(start))
+	}
+	return out
+}
+
+func (a *Agent) handle0(ctx context.Context, st *conn, f *wire.Frame) []byte {
 	if f.Kind != wire.KindRequest {
 		return nil
 	}
@@ -125,10 +136,12 @@ func (a *Agent) handle(ctx context.Context, st *conn, f *wire.Frame) []byte {
 	switch f.Cmd {
 	case wire.CmdPing:
 		if !f.Verify(t.Pass[:16]) {
-			log.Info("matching2 bad MAC")
+			if !a.Stats.Quiet(fmt.Sprint("mac", f.Cmd)) {
+				log.Info("matching2 bad MAC")
+			}
 			return nil
 		}
-		log.Info("matching2 request")
+		log.Debug("matching2 request")
 		// element 0x1d = {u16, u8}, stored by the firmware in the agent context; the values are not meaningful so far.
 		return wire.Reply(t.Pass[:16], f.Cmd, 0, f.ReqID, wire.TLV(0x1d, 0, []byte{0, 1, 0}))
 	case wire.CmdLogin:
@@ -141,7 +154,7 @@ func (a *Agent) handle(ctx context.Context, st *conn, f *wire.Frame) []byte {
 		for _, u := range f.All(0x0e) {
 			ids = append(ids, string(u))
 		}
-		log.Info("matching2 request", "users", len(ids))
+		log.Debug("matching2 request", "users", len(ids))
 		return wire.Reply(t.Pass[:16], f.Cmd, 0, f.ReqID, wire.UserInfoList(ids))
 	}
 	// Everything else is MAC'd with the session key of a login.
@@ -159,18 +172,20 @@ func (a *Agent) handle(ctx context.Context, st *conn, f *wire.Frame) []byte {
 		}
 	}
 	if st.sess == nil || !f.Verify(st.sess.Key) {
-		log.Info("matching2 no session for request")
+		if !a.Stats.Quiet(fmt.Sprint("nosess", f.Cmd)) {
+			log.Info("matching2 no session for request")
+		}
 		st.sess = nil
 		return nil
 	}
 	log = log.With("account", st.sess.Account)
 	switch f.Cmd {
 	case wire.CmdRenew:
-		log.Info("matching2 request")
+		log.Debug("matching2 request")
 		a.Store.Extend(ctx, st.sess.ID, SessionTTL)
 		return wire.Reply(st.sess.Key, f.Cmd, 0, f.ReqID, wire.TLV(0x5d, 2, rnd(16)))
 	case wire.CmdWorldList:
-		log.Info("matching2 request")
+		log.Debug("matching2 request")
 		var rooms, members uint32
 		if a.Core != nil {
 			var err error
@@ -184,7 +199,9 @@ func (a *Agent) handle(ctx context.Context, st *conn, f *wire.Frame) []byte {
 	if f.Cmd == wire.CmdUnknown1209 {
 		// First room-family command Terraria sends after "Start Game" (request: server id only). The reply schema needs
 		// only element 0x20 (a 1..512 byte token); 0x3d is echoed as 1. Meaning of the command is not established.
-		log.Warn("matching2 command 0x1209 answered minimally", "bytes", len(f.Raw), "hex", hex.EncodeToString(f.Redacted()))
+		if !a.Stats.Quiet("1209") {
+			log.Warn("matching2 command 0x1209 answered minimally", "bytes", len(f.Raw), "hex", hex.EncodeToString(f.Redacted()))
+		}
 		return wire.Reply(st.sess.Key, f.Cmd, 0, f.ReqID, wire.TLV(0x3d, 4, []byte{0, 1}), wire.TLV(0x20, 2, rnd(16)))
 	}
 	ids := make([]uint16, 0, len(el))
@@ -196,6 +213,9 @@ func (a *Agent) handle(ctx context.Context, st *conn, f *wire.Frame) []byte {
 		raw = raw[:2048]
 	}
 	// Capture of a command nobody has implemented yet: the request layout is what the next step needs. Secrets are redacted.
+	if a.Stats.Quiet(fmt.Sprint("unimpl", f.Cmd)) {
+		return nil
+	}
 	log.Warn("matching2 unimplemented command", "elements", ids, "bytes", len(f.Raw), "hex", hex.EncodeToString(raw))
 	return nil
 }

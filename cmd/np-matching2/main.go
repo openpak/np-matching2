@@ -31,7 +31,11 @@ func main() {
 }
 
 func run() error {
-	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	lvl := slog.LevelInfo
+	if os.Getenv("NP_LOG_LEVEL") == "debug" {
+		lvl = slog.LevelDebug
+	}
+	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: lvl}))
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
@@ -73,6 +77,7 @@ func run() error {
 	defer conn.Close()
 	a := &agent.Agent{Titles: titles, Store: store, Tickets: signer, Account: acct, Core: mm, Log: log}
 
+	go a.Stats.Run(log, ctx.Done())
 	go func() {
 		for range time.Tick(time.Hour) {
 			store.Purge(ctx)

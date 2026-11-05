@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.1.9
+
+Log volume: per-request lines and per-connection lines are Debug (`NP_LOG_LEVEL=debug`); normal level logs one summary line a minute with per-command counts, replies missing and average ms, plus logins, errors and the first unimplemented/unknown request per command per minute (with redacted hex).
+
 ## v0.1.8
 
 0x1209 (first room-family request after Terraria's Start Game) answered with the required element only.

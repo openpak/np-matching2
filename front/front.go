@@ -198,7 +198,7 @@ func (h Handlers) handle(c net.Conn) {
 		if len(rec) <= 128 {
 			attrs = append(attrs, "hello", hex.EncodeToString(rec)) // a short hello is the firmware's: nothing secret in it
 		}
-		h.Log.Info("no-SNI connection", attrs...)
+		h.Log.Debug("no-SNI connection", attrs...)
 	}
 	if k == Legacy && h.Legacy != nil {
 		h.Legacy(pc)
