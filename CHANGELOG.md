@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.1.8
+
+0x1209 (first room-family request after Terraria's Start Game) answered with the required element only.
+
 ## v0.1.7
 
 GetUserInfoList entries carry the user's display name (0x0c) as well as the NpId.

@@ -24,6 +24,7 @@ const (
 	CmdLogin     = 0x1002 // TLS connection; not MAC'd; carries the passphrase and the NP ticket
 	CmdRenew     = 0x1003 // header only; reply carries a fresh 0x5d token
 	CmdWorldList = 0x1008 // header only; GetWorldInfoList
+	CmdUnknown1209 = 0x1209 // request: element 0x29 u16 = 1 (server id); reply: 0x20 required token, optional 0x3d, 0x1f, 0x02 list of 0x0a (0x84-byte items), 0x12
 )
 
 // Frame is one request, reply or event.

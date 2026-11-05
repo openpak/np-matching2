@@ -181,6 +181,12 @@ func (a *Agent) handle(ctx context.Context, st *conn, f *wire.Frame) []byte {
 		w := wire.World{ID: 1, Rooms: uint16(min(rooms, 0xffff)), RoomMembers: members}
 		return wire.Reply(st.sess.Key, f.Cmd, 0, f.ReqID, wire.WorldList([]wire.World{w}))
 	}
+	if f.Cmd == wire.CmdUnknown1209 {
+		// First room-family command Terraria sends after "Start Game" (request: server id only). The reply schema needs
+		// only element 0x20 (a 1..512 byte token); 0x3d is echoed as 1. Meaning of the command is not established.
+		log.Warn("matching2 command 0x1209 answered minimally", "bytes", len(f.Raw), "hex", hex.EncodeToString(f.Redacted()))
+		return wire.Reply(st.sess.Key, f.Cmd, 0, f.ReqID, wire.TLV(0x3d, 4, []byte{0, 1}), wire.TLV(0x20, 2, rnd(16)))
+	}
 	ids := make([]uint16, 0, len(el))
 	for id := range el {
 		ids = append(ids, id)
