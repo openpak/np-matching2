@@ -8,6 +8,7 @@ import (
 	"bufio"
 	"crypto/tls"
 	"encoding/binary"
+	"encoding/hex"
 	"errors"
 	"io"
 	"log/slog"
@@ -176,7 +177,11 @@ func (h Handlers) handle(c net.Conn) {
 		k = Legacy
 	}
 	if h.Log != nil {
-		h.Log.Info("no-SNI connection", "kind", k.String(), "hello_bytes", len(rec))
+		attrs := []any{"kind", k.String(), "hello_bytes", len(rec)}
+		if len(rec) <= 128 {
+			attrs = append(attrs, "hello", hex.EncodeToString(rec)) // a short hello is the firmware's: nothing secret in it
+		}
+		h.Log.Info("no-SNI connection", attrs...)
 	}
 	if k == Legacy && h.Legacy != nil {
 		h.Legacy(pc)
