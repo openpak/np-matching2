@@ -1,0 +1,25 @@
+# Sample only. Copy to ~/.config/containers/systemd/openpak-np-matching2.container, then pin-ips.sh --apply.
+[Unit]
+Description=OpenPak np-matching2 (PS3 Matching2 agent)
+Requires=openpak-postgres.service openpak-matchmaking.service
+After=openpak-postgres.service openpak-matchmaking.service
+
+[Container]
+ContainerName=openpak-np-matching2
+Image=ghcr.io/openpak/np-matching2:latest
+AutoUpdate=registry
+Network=openpak.network
+EnvironmentFile=%h/openpak/deploy/ps3-split/np-matching2.env
+EnvironmentFile=%h/openpak/deploy/erase.env
+Volume=%h/openpak/deploy/keys/np-ps3-ca.pem:/run/ps3/ps3-ca.pem:ro,U
+Volume=%h/openpak/deploy/keys/np-ps3-ca.key:/run/ps3/ps3-ca.key:ro,U
+Volume=%h/openpak/deploy/keys/np-ticket-key.pem:/run/ps3/np-ticket-key.pem:ro,U
+Volume=%h/openpak/deploy/ps3-split/np-matching-titles.json:/run/ps3/matching-titles.json:ro,U
+Volume=%h/openpak/deploy/traefik/certs/battlenet.pem:/run/ps3/battlenet.pem:ro,U
+Volume=%h/openpak/deploy/traefik/certs/battlenet.key:/run/ps3/battlenet.key:ro,U
+
+[Service]
+Restart=on-failure
+
+[Install]
+WantedBy=default.target
