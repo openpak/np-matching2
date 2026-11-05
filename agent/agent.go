@@ -68,10 +68,10 @@ func (a *Agent) log() *slog.Logger {
 }
 
 type conn struct {
-	comm         string
-	sess         *Session
-	room         string // core session id of the room this connection created
-	memberOnline string
+	comm string
+	sess *Session
+	room string        // core session id of the room this connection created
+	stop chan struct{} // closed when the connection ends
 }
 
 // ServePlain handles the plain TCP connection (0x1001, then the session's requests).
@@ -82,7 +82,8 @@ func (a *Agent) ServeTLS(c net.Conn) { a.serve(c, true) }
 
 func (a *Agent) serve(c net.Conn, secure bool) {
 	defer c.Close()
-	st := &conn{}
+	st := &conn{stop: make(chan struct{})}
+	defer close(st.stop)
 	buf := make([]byte, 0x6000)
 	for {
 		c.SetReadDeadline(time.Now().Add(60 * time.Second))
@@ -341,6 +342,7 @@ func (a *Agent) createRoom(ctx context.Context, log *slog.Logger, t Title, st *c
 		return nil
 	}
 	st.room = room.ID
+	a.keepAlive(st)
 	log.Info("matching2 room created", "session", room.ID, "max_slot", maxSlot, "bytes", len(f.Raw))
 	rd := wire.RoomData{ServerID: 1, WorldID: 1, MaxSlot: uint16(maxSlot)}
 	els := wire.CreateJoinRoomReply(room.RoomID, rd, uint16(room.MemberNo), st.sess.OnlineID, st.sess.OnlineID, rnd(16), rnd(16))
@@ -404,6 +406,7 @@ func (a *Agent) joinRoom(ctx context.Context, log *slog.Logger, t Title, st *con
 		return nil
 	}
 	st.room = j.ID
+	a.keepAlive(st)
 	log.Info("matching2 room joined", "session", j.ID, "by", how, "member", j.MemberNo)
 	members := make([]wire.MemberInfo, 0, len(j.Members))
 	for _, m := range j.Members {
@@ -427,4 +430,25 @@ func (a *Agent) resolveSession(ctx context.Context, st *conn, f *wire.Frame) {
 			}
 		}
 	}
+}
+
+// keepAlive heartbeats the room member in the core while its room-server connection is open (the console sends only 0x00 keepalives
+// on it, which carry no account): without it the core would reap the member after the session ttl.
+func (a *Agent) keepAlive(st *conn) {
+	if a.Rooms == nil || st.sess == nil {
+		return
+	}
+	account := st.sess.Account
+	go func() {
+		t := time.NewTicker(30 * time.Second)
+		defer t.Stop()
+		for {
+			select {
+			case <-t.C:
+				a.Rooms.Heartbeat(context.Background(), account)
+			case <-st.stop:
+				return
+			}
+		}
+	}()
 }

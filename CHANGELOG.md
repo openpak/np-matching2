@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.2.5
+
+A room member is heartbeated in the core every 30 s while its room-server connection is open (the console's keepalive bytes carry no account); before, the core reaped the host after 5 minutes.
+
 ## v0.2.4
 
 testclient offers the RSA key-exchange suites the agent's TLS requires.
