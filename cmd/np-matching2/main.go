@@ -24,6 +24,13 @@ import (
 )
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "testclient" {
+		if err := testclient(os.Args[2:]); err != nil {
+			fmt.Fprintln(os.Stderr, "testclient:", err)
+			os.Exit(1)
+		}
+		return
+	}
 	if err := run(); err != nil {
 		slog.Error("np-matching2 stopped", "err", err)
 		os.Exit(1)
@@ -39,22 +46,9 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	// NP_MATCHING_TITLES: {"NPWR04270_00": {"title": "terraria", "passphrase": "<256 hex>"}}
-	raw, err := os.ReadFile(os.Getenv("NP_MATCHING_TITLES"))
+	titles, err := loadTitles()
 	if err != nil {
-		return fmt.Errorf("NP_MATCHING_TITLES: %w", err)
-	}
-	var cfg map[string]struct{ Title, Passphrase string }
-	if err := json.Unmarshal(raw, &cfg); err != nil {
-		return fmt.Errorf("NP_MATCHING_TITLES: %w", err)
-	}
-	titles := map[string]agent.Title{}
-	for id, t := range cfg {
-		p, err := hex.DecodeString(t.Passphrase)
-		if err != nil || len(p) != 128 || t.Title == "" {
-			return fmt.Errorf("NP_MATCHING_TITLES %s: want title and a 256-hex passphrase", id)
-		}
-		titles[id] = agent.Title{Key: t.Title, Pass: p}
+		return err
 	}
 	store, err := agent.OpenStore(ctx, os.Getenv("NP_DATABASE_URL"))
 	if err != nil {
@@ -131,4 +125,25 @@ func serve(ln net.Listener, h func(net.Conn)) {
 		}
 		go h(c)
 	}
+}
+
+func loadTitles() (map[string]agent.Title, error) {
+	// NP_MATCHING_TITLES: {"NPWR04270_00": {"title": "terraria", "passphrase": "<256 hex>"}}
+	raw, err := os.ReadFile(os.Getenv("NP_MATCHING_TITLES"))
+	if err != nil {
+		return nil, fmt.Errorf("NP_MATCHING_TITLES: %w", err)
+	}
+	var cfg map[string]struct{ Title, Passphrase string }
+	if err := json.Unmarshal(raw, &cfg); err != nil {
+		return nil, fmt.Errorf("NP_MATCHING_TITLES: %w", err)
+	}
+	titles := map[string]agent.Title{}
+	for id, t := range cfg {
+		p, err := hex.DecodeString(t.Passphrase)
+		if err != nil || len(p) != 128 || t.Title == "" {
+			return nil, fmt.Errorf("NP_MATCHING_TITLES %s: want title and a 256-hex passphrase", id)
+		}
+		titles[id] = agent.Title{Key: t.Title, Pass: p}
+	}
+	return titles, nil
 }

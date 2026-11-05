@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.2.3
+
+`np-matching2 testclient <online id>`: a headless second player run inside the container (ticket issued with the agent's key for an existing test account) that logs in, searches and joins the newest room; for the two-client test.
+
 ## v0.2.2
 
 The room-server connection (0x2001 onwards, seen live in Pier) carries no communication id: the title and login are found by the request's session MAC.
