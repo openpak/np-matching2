@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.2.2
+
+The room-server connection (0x2001 onwards, seen live in Pier) carries no communication id: the title and login are found by the request's session MAC.
+
 ## v0.2.1
 
 SearchRoom (0x1200/0x120c) and JoinRoom (0x3201) over the core. Search lists the open rooms of the title in the searcher's group (`compat` forced to `old-gen-1.2.4`);

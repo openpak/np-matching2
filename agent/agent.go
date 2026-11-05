@@ -149,6 +149,10 @@ func (a *Agent) handle0(ctx context.Context, st *conn, f *wire.Frame) []byte {
 	if id := string(el[0x10]); id != "" {
 		st.comm = id
 	}
+	if st.comm == "" && f.Cmd != wire.CmdLogin {
+		// The room-server connection (0x2001 onwards) carries no communication id: find the title and login by the request's session MAC.
+		a.resolveSession(ctx, st, f)
+	}
 	log := a.log().With("cmd", f.Cmd, "title", st.comm)
 	t, ok := a.Titles[st.comm]
 	if !ok {
@@ -408,4 +412,19 @@ func (a *Agent) joinRoom(ctx context.Context, log *slog.Logger, t Title, st *con
 	rd := wire.RoomData{ServerID: 1, WorldID: 1, MaxSlot: uint16(j.Max)}
 	els := wire.JoinRoomReply(uint16(j.MemberNo), j.RoomID, rd, members, rnd(16), rnd(16))
 	return wire.Reply(st.sess.Key, f.Cmd, 0, f.ReqID, els...)
+}
+
+func (a *Agent) resolveSession(ctx context.Context, st *conn, f *wire.Frame) {
+	for comm := range a.Titles {
+		sessions, err := a.Store.Active(ctx, comm)
+		if err != nil {
+			continue
+		}
+		for _, s := range sessions {
+			if f.Verify(s.Key) {
+				st.comm, st.sess = comm, s
+				return
+			}
+		}
+	}
 }
