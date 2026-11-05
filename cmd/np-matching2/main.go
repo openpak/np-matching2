@@ -75,7 +75,7 @@ func run() error {
 		return err
 	}
 	defer conn.Close()
-	a := &agent.Agent{Titles: titles, Store: store, Tickets: signer, Account: acct, Core: mm, Log: log}
+	a := &agent.Agent{Titles: titles, Store: store, Tickets: signer, Account: acct, Core: mm, Log: log, RoomHost: nphttp.Env("NP_MATCHING_HOST", "matching.np.community.playstation.net"), RoomPort: 3480}
 
 	go a.Stats.Run(log, ctx.Done())
 	go func() {

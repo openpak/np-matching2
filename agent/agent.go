@@ -43,6 +43,9 @@ type Agent struct {
 	Core    Core
 	Log     *slog.Logger
 	Stats   Stats
+	// RoomHost and RoomPort are the room-server endpoint handed to the console in the 0x1209 reply (this agent's plain port).
+	RoomHost string
+	RoomPort uint16
 }
 
 func (a *Agent) log() *slog.Logger {
@@ -200,9 +203,9 @@ func (a *Agent) handle0(ctx context.Context, st *conn, f *wire.Frame) []byte {
 		// First room-family command Terraria sends after "Start Game" (request: server id only). The reply schema needs
 		// only element 0x20 (a 1..512 byte token); 0x3d is echoed as 1. Meaning of the command is not established.
 		if !a.Stats.Quiet("1209") {
-			log.Warn("matching2 command 0x1209 answered minimally", "bytes", len(f.Raw), "hex", hex.EncodeToString(f.Redacted()))
+			log.Warn("matching2 command 0x1209 answered", "bytes", len(f.Raw), "hex", hex.EncodeToString(f.Redacted()))
 		}
-		return wire.Reply(st.sess.Key, f.Cmd, 0, f.ReqID, wire.TLV(0x3d, 4, []byte{0, 1}), wire.TLV(0x20, 2, rnd(16)))
+		return wire.Reply(st.sess.Key, f.Cmd, 0, f.ReqID, wire.TLV(0x3d, 4, []byte{0, 1}), wire.TLV(0x20, 2, rnd(16)), wire.ServerList(a.RoomHost, a.RoomPort))
 	}
 	ids := make([]uint16, 0, len(el))
 	for id := range el {

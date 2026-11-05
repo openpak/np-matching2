@@ -39,3 +39,15 @@ func TestKeepaliveAndReply(t *testing.T) {
 		t.Fatalf("world list %d", len(g.Elements()[0x02]))
 	}
 }
+
+func TestServerList(t *testing.T) {
+	b := ServerList("matching.example", 3480)
+	// 0x02 header (4) + list header (4) + 0x0a header (4) + port (2) + 0x09 header (4) + 16 host bytes
+	if len(b) != 4+4+4+2+4+16 {
+		t.Fatalf("len %d", len(b))
+	}
+	el := (&Frame{Body: b}).Elements()
+	if len(el[0x02]) != 4+4+2+4+16 || el[0x02][3] != 1 {
+		t.Fatalf("list %x", el[0x02])
+	}
+}

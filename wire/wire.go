@@ -213,3 +213,13 @@ func UserInfoList(onlineIDs []string) []byte {
 	}
 	return TLV(0x02, 0, list)
 }
+
+// ServerList encodes the 0x02 element of a 0x1209 reply: room-server endpoints, each 0x0a = u16 port + TLV 0x09 (host name).
+// The firmware reads this list into the room request and dereferences the first entry; an empty list makes vsh fault
+// (null pointer at 0x29ae9c), which freezes the emulator.
+func ServerList(host string, port uint16) []byte {
+	item := append([]byte{byte(port >> 8), byte(port)}, TLV(0x09, 1, []byte(host))...)
+	list := []byte{0x00, 0x0a, 0, 1}
+	list = append(list, TLV(0x0a, 0, item)...)
+	return TLV(0x02, 0, list)
+}
