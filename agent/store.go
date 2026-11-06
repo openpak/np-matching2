@@ -2,13 +2,15 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// Store keeps the agent's protocol state: login sessions (the MAC key a console was handed). Nothing about
-// rooms lives here; that is the matchmaking core.
+// Store keeps the agent's protocol state: login sessions (the MAC key a console was handed) and the per-member room keys
+// (the MAC key of a member's room requests and events). Rooms themselves live in the matchmaking core.
 type Store struct{ DB *pgxpool.Pool }
 
 const schema = `
@@ -23,6 +25,15 @@ CREATE TABLE IF NOT EXISTS m2_sessions (
 );
 CREATE INDEX IF NOT EXISTS m2_sessions_comm ON m2_sessions (comm_id, expires);
 CREATE INDEX IF NOT EXISTS m2_sessions_account ON m2_sessions (account);
+CREATE TABLE IF NOT EXISTS m2_room_keys (
+    room      UUID NOT NULL,
+    account   UUID NOT NULL,
+    key       BYTEA NOT NULL,
+    created   TIMESTAMPTZ NOT NULL,
+    PRIMARY KEY (room, account)
+);
+CREATE INDEX IF NOT EXISTS m2_room_keys_account ON m2_room_keys (account, created DESC);
+CREATE INDEX IF NOT EXISTS m2_room_keys_created ON m2_room_keys (created);
 `
 
 func OpenStore(ctx context.Context, url string) (*Store, error) {
@@ -83,11 +94,80 @@ func (s *Store) Extend(ctx context.Context, id int64, ttl time.Duration) error {
 
 func (s *Store) Purge(ctx context.Context) (int64, error) {
 	t, err := s.DB.Exec(ctx, `DELETE FROM m2_sessions WHERE expires < now() - interval '1 hour'`)
-	return t.RowsAffected(), err
+	if err != nil {
+		return 0, err
+	}
+	k, err := s.DB.Exec(ctx, `DELETE FROM m2_room_keys WHERE created < now() - interval '2 days'`)
+	return t.RowsAffected() + k.RowsAffected(), err
+}
+
+// RoomKey is one member's key for a room: the MAC key of that member's 0x31xx/0x32xx requests, replies and events.
+type RoomKey struct {
+	Room    string
+	Account string
+	Key     []byte
+}
+
+// PutRoomKey stores (or replaces) a member's room key.
+func (s *Store) PutRoomKey(ctx context.Context, room, account string, key []byte) error {
+	_, err := s.DB.Exec(ctx, `INSERT INTO m2_room_keys (room,account,key,created) VALUES ($1,$2,$3,$4)
+ON CONFLICT (room,account) DO UPDATE SET key=EXCLUDED.key, created=EXCLUDED.created`, room, account, key, time.Now().UTC())
+	return err
+}
+
+// GetRoomKey returns a member's room key, or nil.
+func (s *Store) GetRoomKey(ctx context.Context, room, account string) ([]byte, error) {
+	var k []byte
+	err := s.DB.QueryRow(ctx, `SELECT key FROM m2_room_keys WHERE room=$1 AND account=$2`, room, account).Scan(&k)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	return k, err
+}
+
+// RecentRoomKeys lists the room keys of the last day, newest first: a room request on a fresh connection names nobody, so the
+// agent finds its member by the MAC.
+func (s *Store) RecentRoomKeys(ctx context.Context, account string) ([]RoomKey, error) {
+	q, args := `SELECT room::text, account::text, key FROM m2_room_keys WHERE created > now() - interval '1 day' ORDER BY created DESC LIMIT 2000`, []any{}
+	if account != "" {
+		q, args = `SELECT room::text, account::text, key FROM m2_room_keys WHERE account=$1 AND created > now() - interval '1 day' ORDER BY created DESC LIMIT 50`, []any{account}
+	}
+	rows, err := s.DB.Query(ctx, q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []RoomKey
+	for rows.Next() {
+		var k RoomKey
+		if err := rows.Scan(&k.Room, &k.Account, &k.Key); err != nil {
+			return nil, err
+		}
+		out = append(out, k)
+	}
+	return out, rows.Err()
+}
+
+// SessionOf returns the newest unexpired login of an account for a title, or nil.
+func (s *Store) SessionOf(ctx context.Context, comm, account string) (*Session, error) {
+	all, err := s.Active(ctx, comm)
+	if err != nil {
+		return nil, err
+	}
+	for _, x := range all {
+		if x.Account == account {
+			return x, nil
+		}
+	}
+	return nil, nil
 }
 
 // Erase removes every session of an account (account erasure).
 func (s *Store) Erase(ctx context.Context, account string) (int64, error) {
 	t, err := s.DB.Exec(ctx, `DELETE FROM m2_sessions WHERE account=$1`, account)
-	return t.RowsAffected(), err
+	if err != nil {
+		return 0, err
+	}
+	k, err := s.DB.Exec(ctx, `DELETE FROM m2_room_keys WHERE account=$1`, account)
+	return t.RowsAffected() + k.RowsAffected(), err
 }

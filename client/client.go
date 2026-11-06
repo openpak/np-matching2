@@ -28,17 +28,35 @@ func roundTrip(conn net.Conn, req []byte) (*wire.Frame, error) {
 	if _, err := conn.Write(req); err != nil {
 		return nil, err
 	}
+	return ReadFrame(conn)
+}
+
+// ReadFrame reads the next frame, skipping the server's lone 0x00 keepalive bytes.
+func ReadFrame(conn net.Conn) (*wire.Frame, error) {
 	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
 	buf := make([]byte, 0x6000)
-	n, err := conn.Read(buf)
-	if err != nil {
-		return nil, err
+	var have []byte
+	for {
+		n, err := conn.Read(buf)
+		if err != nil {
+			return nil, err
+		}
+		have = append(have, buf[:n]...)
+		for len(have) > 0 && have[0] == 0 {
+			have = have[1:]
+		}
+		if len(have) < 4 {
+			continue
+		}
+		f, _, err := wire.Parse(have)
+		if err != nil {
+			continue // a frame split over reads
+		}
+		if f == nil {
+			return nil, errors.New("client: no reply frame")
+		}
+		return f, nil
 	}
-	f, _, err := wire.Parse(buf[:n])
-	if err != nil || f == nil {
-		return nil, errors.New("client: no reply frame")
-	}
-	return f, nil
 }
 
 // Ping is 0x1001 on the plain connection, MAC'd with the passphrase.
@@ -77,6 +95,18 @@ func (c *Client) Login(ticket []byte, onlineID, name string) (*wire.Frame, error
 }
 
 // Call sends a header-only request on the plain connection, MAC'd with the session key.
+// CallKey sends a request MAC'd with key (a room key) and checks the reply against it.
+func (c *Client) CallKey(key []byte, cmd uint16, elems ...[]byte) (*wire.Frame, error) {
+	f, err := roundTrip(c.Plain, wire.Request(key, cmd, c.id(), elems...))
+	if err != nil {
+		return nil, err
+	}
+	if !f.Verify(key) {
+		return nil, errors.New("client: reply MAC")
+	}
+	return f, nil
+}
+
 func (c *Client) Call(cmd uint16, elems ...[]byte) (*wire.Frame, error) {
 	f, err := roundTrip(c.Plain, wire.Request(c.Key, cmd, c.id(), elems...))
 	if err != nil {

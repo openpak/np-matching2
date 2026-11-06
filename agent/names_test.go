@@ -39,10 +39,15 @@ type rooms struct {
 	joined   int
 }
 
-func (r *rooms) CreateRoom(context.Context, string, string, uint32, []byte) (*Room, error) { return nil, nil }
-func (r *rooms) LeaveRoom(context.Context, string, string) error                         { return nil }
-func (r *rooms) SetRoomData(context.Context, string, string, []byte) error               { return nil }
-func (r *rooms) Heartbeat(context.Context, string)                                       {}
+func (r *rooms) CreateRoom(context.Context, string, string, uint32, []byte) (*Room, error) {
+	return nil, nil
+}
+func (r *rooms) LeaveRoom(context.Context, string, string) error                  { return nil }
+func (r *rooms) SetRoomData(context.Context, string, string, []byte) error        { return nil }
+func (r *rooms) Heartbeat(context.Context, string)                                {}
+func (r *rooms) SetEndpoints(context.Context, string, string, []byte, byte) error { return nil }
+func (r *rooms) Members(context.Context, string, string) ([]RoomMember, error)    { return nil, nil }
+func (r *rooms) Watch(context.Context, string, func(RoomEvent)) error             { return nil }
 func (r *rooms) SearchRooms(_ context.Context, _, _ string, networks []string, _ uint32) ([]RoomInfo, error) {
 	r.networks = networks
 	var out []RoomInfo

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/binary"
 	"encoding/hex"
+	"net"
 	"strings"
 
 	"google.golang.org/grpc"
@@ -144,10 +145,82 @@ type JoinedRoom struct {
 	Members  []RoomMember
 }
 
-// RoomMember is a member as the core holds it: a number and a core account id (the agent resolves the name).
+// RoomMember is a member as the core holds it: a number, a core account id (the agent resolves the name) and the member's published
+// public UDP endpoint (Addr = IPv4 bytes, empty when none) with its NAT type.
 type RoomMember struct {
 	No      uint32
 	Account string
+	Addr    []byte
+	NAT     byte
+}
+
+func memberOf(mm *pb.Member) RoomMember {
+	r := RoomMember{No: mm.GetMemberNo(), Account: mm.GetAccountId()}
+	for _, e := range mm.GetEndpoints() {
+		if e.GetKind() != "udp" {
+			continue
+		}
+		if ip := net.ParseIP(e.GetHost()).To4(); ip != nil {
+			r.Addr, r.NAT = []byte(ip), byte(e.GetNatType())
+			break
+		}
+	}
+	return r
+}
+
+// SignalPort is the PS3's signaling UDP port (the SceNp2 signaling default, inferred): published with the console's address so other
+// networks' adapters and the relay know where to reach it.
+const SignalPort = 3658
+
+// SetEndpoints publishes a member's public address (the 4 bytes of its 0x6e member attr) and NAT type in the core: kind "udp",
+// port SignalPort. This is the shared contract with the cross-network relay (prds#145).
+func (m *MatchmakingCore) SetEndpoints(ctx context.Context, session, account string, addr []byte, nat byte) error {
+	if len(addr) != 4 {
+		return nil
+	}
+	_, err := m.C.SetEndpoints(m.ctx(ctx), &pb.SetEndpointsRequest{SessionId: session, AccountId: account,
+		Endpoints: []*pb.Endpoint{{Kind: "udp", Host: net.IP(addr).String(), Port: SignalPort, NatType: uint32(nat)}}})
+	return err
+}
+
+// Members lists a room's members as the viewer (a member) sees them, endpoints included.
+func (m *MatchmakingCore) Members(ctx context.Context, session, viewer string) ([]RoomMember, error) {
+	res, err := m.C.GetSession(m.ctx(ctx), &pb.GetSessionRequest{SessionId: session, Viewer: viewer})
+	if err != nil {
+		return nil, err
+	}
+	var out []RoomMember
+	for _, mm := range res.GetSession().GetMembers() {
+		out = append(out, memberOf(mm))
+	}
+	return out, nil
+}
+
+// RoomEvent is a core event delivered to one account.
+type RoomEvent struct {
+	Type     string // "member_joined", "member_left", "member_updated", "owner_changed", "session_ended", "signal", ...
+	Session  string
+	Subject  string // the account the event is about
+	To       string
+	MemberNo uint32
+	Text     string
+	Payload  []byte
+}
+
+// Watch streams the core's events for account until ctx ends or the stream breaks.
+func (m *MatchmakingCore) Watch(ctx context.Context, account string, fn func(RoomEvent)) error {
+	st, err := m.C.Watch(m.ctx(ctx), &pb.WatchRequest{Accounts: []string{account}})
+	if err != nil {
+		return err
+	}
+	for {
+		ev, err := st.Recv()
+		if err != nil {
+			return err
+		}
+		fn(RoomEvent{Type: strings.ToLower(strings.TrimPrefix(ev.GetType().String(), "EVENT_TYPE_")), Session: ev.GetSessionId(),
+			Subject: ev.GetAccountId(), To: ev.GetTo(), MemberNo: ev.GetMemberNo(), Text: ev.GetText(), Payload: ev.GetPayload()})
+	}
 }
 
 func (m *MatchmakingCore) JoinRoom(ctx context.Context, session, account string) (*JoinedRoom, error) {
@@ -157,7 +230,7 @@ func (m *MatchmakingCore) JoinRoom(ctx context.Context, session, account string)
 	}
 	j := &JoinedRoom{ID: session, RoomID: roomIDOf(session), MemberNo: res.GetMemberNo(), Max: res.GetSession().GetMaxMembers()}
 	for _, mm := range res.GetSession().GetMembers() {
-		j.Members = append(j.Members, RoomMember{No: mm.GetMemberNo(), Account: mm.GetAccountId()})
+		j.Members = append(j.Members, memberOf(mm))
 	}
 	return j, nil
 }

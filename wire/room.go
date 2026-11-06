@@ -46,25 +46,40 @@ func (r RoomData) Element() []byte {
 
 // Member is the 0x4b element (internal variant: 0x0b, 0x0c, 0x0d, 0x59, 0x6e all required).
 func Member(memberID uint16, onlineID, name string) []byte {
-	b := binary.BigEndian.AppendUint16(nil, memberID)
+	return MemberOf(MemberInfo{No: uint32(memberID), Name: onlineID, Nick: name})
+}
+
+// MemberOf encodes a member with its NAT type and its 0x6e member bin attr. The console fills 0x6e in its own 0x3200/0x3201 request with
+// 4 bytes that are its public IPv4 address (seen on hardware: 37.228.205.125), and 0x13 with a small number taken as its NAT type
+// (inferred); handing them back per member is how a console learns where its peers are.
+func MemberOf(m MemberInfo) []byte {
+	b := binary.BigEndian.AppendUint16(nil, uint16(m.No))
 	b = append(b, make([]byte, 8)...) // join date
 	b = append(b, 0, 0, 0, 0)         // flag attr
-	b = append(b, 0, 0)               // nat type, team id
+	b = append(b, m.NAT, 0)           // nat type, team id
+	nick := m.Nick
+	if nick == "" {
+		nick = m.Name
+	}
 	nm := make([]byte, 48)
-	copy(nm, name)
-	b = append(b, TLV(0x0b, 0, NpID(onlineID))...)
+	copy(nm, nick)
+	addr := m.Addr
+	if len(addr) > 8 {
+		addr = addr[:8]
+	}
+	b = append(b, TLV(0x0b, 0, NpID(m.Name))...)
 	b = append(b, TLV(0x0c, 1, nm)...)
 	b = append(b, TLV(0x0d, 1, nil)...)
 	b = append(b, TLV(0x59, 0, binAttr(0, false, nil))...)
-	b = append(b, TLV(0x6e, 2, nil)...)
+	b = append(b, TLV(0x6e, 2, addr)...)
 	return TLV(0x4b, 0, b)
 }
 
 // CreateJoinRoomReply holds the five required elements of the 0x3200 reply.
-func CreateJoinRoomReply(roomID uint64, rd RoomData, memberID uint16, onlineID, name string, tok24, tok21 []byte) [][]byte {
+func CreateJoinRoomReply(roomID uint64, rd RoomData, me MemberInfo, tok24, tok21 []byte) [][]byte {
 	rd.RoomID = roomID
 	id := binary.BigEndian.AppendUint64(nil, roomID)
-	return [][]byte{TLV(0x24, 2, tok24), TLV(0x3a, 2, id), TLV(0x21, 2, tok21), rd.Element(), Member(memberID, onlineID, name)}
+	return [][]byte{TLV(0x24, 2, tok24), TLV(0x3a, 2, id), TLV(0x21, 2, tok21), rd.Element(), MemberOf(me)}
 }
 
 // SearchItem is one 0x45 item of a SearchRoom reply (RoomDataExternal). Wire layout from vsh 0x2bd548: three u16 (the room id's low 48 bits),
@@ -103,12 +118,17 @@ func JoinRoomReply(myMember uint16, roomID uint64, rd RoomData, members []Member
 	id := binary.BigEndian.AppendUint64(nil, roomID)
 	list := []byte{0x00, 0x4b, byte(len(members) >> 8), byte(len(members))}
 	for _, m := range members {
-		list = append(list, Member(uint16(m.No), m.Name, m.Name)...)
+		list = append(list, MemberOf(m)...)
 	}
 	return [][]byte{TLV(0x16, 4, binary.BigEndian.AppendUint16(nil, myMember)), TLV(0x24, 2, tok24), TLV(0x3a, 2, id), TLV(0x21, 2, tok21), rd.Element(), TLV(0x02, 0, list)}
 }
 
+// MemberInfo is one room member as the wire shows it: Name is the NpId online id, Nick the display name (default Name), Addr the member's
+// 0x6e bytes (its public IPv4 for a PS3) and NAT its NAT type.
 type MemberInfo struct {
 	No   uint32
 	Name string
+	Nick string
+	Addr []byte
+	NAT  byte
 }

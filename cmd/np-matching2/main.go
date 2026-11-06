@@ -70,7 +70,7 @@ func run() error {
 		return err
 	}
 	defer conn.Close()
-	a := &agent.Agent{Rooms: mm, Titles: titles, Store: store, Tickets: signer, Account: acct, Core: mm, Log: log, RoomHost: nphttp.Env("NP_MATCHING_HOST", "matching.np.community.playstation.net"), RoomPort: 3480}
+	a := &agent.Agent{Rooms: mm, Titles: titles, Store: store, Tickets: signer, Account: acct, Core: mm, Log: log, RoomHost: nphttp.Env("NP_MATCHING_HOST", "matching.np.community.playstation.net"), RoomPort: 3480, RoomEvents: os.Getenv("NP_MATCHING_ROOM_EVENTS") == "1"}
 	a.CrossNetworks = crossNetworks(os.Getenv("NP_MATCHING_CROSS_NETWORKS"))
 	if len(a.CrossNetworks) > 0 {
 		log.Info("np-matching2 cross-network listing on", "networks", a.CrossNetworks)

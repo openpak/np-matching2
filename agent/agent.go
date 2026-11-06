@@ -12,6 +12,7 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"sync"
 	"time"
 
 	"openpak/np-common/ticket"
@@ -40,6 +41,11 @@ type Rooms interface {
 	Heartbeat(ctx context.Context, account string)
 	SearchRooms(ctx context.Context, title, compat string, networks []string, limit uint32) ([]RoomInfo, error)
 	JoinRoom(ctx context.Context, session, account string) (*JoinedRoom, error)
+	// SetEndpoints publishes a member's public IPv4 (4 bytes) and NAT type; Members lists a room as a member sees it; Watch streams
+	// the core's events for one account until ctx ends.
+	SetEndpoints(ctx context.Context, session, account string, addr []byte, nat byte) error
+	Members(ctx context.Context, session, viewer string) ([]RoomMember, error)
+	Watch(ctx context.Context, account string, fn func(RoomEvent)) error
 }
 
 // AccountCore verifies a ticket's account and link (np-common coreclient).
@@ -61,6 +67,9 @@ type Agent struct {
 	// CrossNetworks are the other networks whose rooms of the same compat group a PS3 search lists (NP_MATCHING_CROSS_NETWORKS,
 	// e.g. "wiiu"; default none). Listing only: a join into such a room is refused until the cross-network relay exists (prds#145).
 	CrossNetworks []string
+	// RoomEvents turns on the push of room events (MemberJoined, kind 4) to the members' open connections (NP_MATCHING_ROOM_EVENTS=1).
+	// Off by default: the event header layout is inferred from the firmware and not yet seen accepted by a console.
+	RoomEvents bool
 	// HeartbeatEvery is how often RunHeartbeats refreshes the room members of every console with a live login (default 30 s).
 	HeartbeatEvery time.Duration
 }
@@ -138,10 +147,22 @@ func (a *Agent) log() *slog.Logger {
 }
 
 type conn struct {
-	comm string
-	sess *Session
-	room string        // core session id of the room this connection created
-	stop chan struct{} // closed when the connection ends
+	comm     string
+	sess     *Session
+	room     string        // core session id of the room this connection created, joined or named by a room-key MAC
+	roomKey  []byte        // that member's room key when the current request was MAC'd with it
+	stop     chan struct{} // closed when the connection ends
+	w        net.Conn
+	secure   bool
+	mu       sync.Mutex // serialises writes: replies, keepalive echoes and pushed events
+	watching bool
+}
+
+func (st *conn) write(b []byte) error {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	_, err := st.w.Write(b)
+	return err
 }
 
 // ServePlain handles the plain TCP connection (0x1001, then the session's requests).
@@ -152,7 +173,7 @@ func (a *Agent) ServeTLS(c net.Conn) { a.serve(c, true) }
 
 func (a *Agent) serve(c net.Conn, secure bool) {
 	defer c.Close()
-	st := &conn{stop: make(chan struct{})}
+	st := &conn{stop: make(chan struct{}), w: c, secure: secure}
 	defer close(st.stop)
 	buf := make([]byte, 0x6000)
 	for {
@@ -168,14 +189,23 @@ func (a *Agent) serve(c net.Conn, secure bool) {
 				}
 				rest = r
 				if f == nil {
-					continue // keepalive
+					// Keepalive. The firmware's receiver also takes a lone 0x00 as one and closes an agent connection about 20 s after
+					// the server last sent anything (seen on hardware: the main connection ended 20 s after the last reply while the
+					// console kept sending keepalives), so a plain keepalive is answered with one.
+					if !secure {
+						if st.write([]byte{0}) != nil {
+							return
+						}
+					}
+					continue
 				}
 				out := a.handle(context.Background(), st, f)
 				if out != nil {
-					if _, werr := c.Write(out); werr != nil {
+					if st.write(out) != nil {
 						return
 					}
 				}
+				a.watch(st)
 			}
 		}
 		if err != nil {
@@ -254,6 +284,14 @@ func (a *Agent) handle0(ctx context.Context, st *conn, f *wire.Frame) []byte {
 		log.Debug("matching2 request", "users", len(ids))
 		return wire.Reply(t.Pass[:16], f.Cmd, 0, f.ReqID, wire.UserInfoList(ids))
 	}
+	// Room requests other than create/join (0x3202 leave, ...) are MAC'd with the member's room key, not the session key.
+	st.roomKey = nil
+	if f.Cmd>>8 == 0x32 && f.Cmd != 0x3200 && f.Cmd != 0x3201 {
+		if a.resolveRoomKey(ctx, st, f) {
+			log = log.With("account", st.sess.Account)
+			return a.roomRequest(ctx, log, st, f)
+		}
+	}
 	// Everything else is MAC'd with the session key of a login.
 	if st.sess == nil {
 		sessions, err := a.Store.Active(ctx, st.comm)
@@ -304,13 +342,11 @@ func (a *Agent) handle0(ctx context.Context, st *conn, f *wire.Frame) []byte {
 	case 0x3201:
 		return a.joinRoom(ctx, log, t, st, f)
 	case 0x3202:
-		if a.Rooms != nil && st.room != "" {
-			a.Rooms.LeaveRoom(ctx, st.room, st.sess.Account)
-			log.Info("matching2 room left", "session", st.room)
-			st.room = ""
-		}
-		return wire.Reply(st.sess.Key, f.Cmd, 0, f.ReqID)
+		return a.roomRequest(ctx, log, st, f)
 	case 0x1202:
+		if a.Rooms != nil && st.room == "" {
+			st.room = a.latestRoom(ctx, st.sess.Account)
+		}
 		if a.Rooms != nil && st.room != "" {
 			a.Rooms.SetRoomData(ctx, st.room, st.sess.Account, roomBlob(f))
 		}
@@ -413,9 +449,16 @@ func (a *Agent) createRoom(ctx context.Context, log *slog.Logger, t Title, st *c
 	}
 	st.room = room.ID
 	a.keepAlive(st)
-	log.Info("matching2 room created", "session", room.ID, "max_slot", maxSlot, "bytes", len(f.Raw))
+	addr, nat := a.publishEndpoint(ctx, log, room.ID, st.sess.Account, f)
+	tok, err := a.newRoomKey(ctx, room.ID, st.sess)
+	if err != nil {
+		log.Error("matching2 room key", "err", err)
+		return nil
+	}
+	log.Info("matching2 room created", "session", room.ID, "max_slot", maxSlot, "bytes", len(f.Raw), "endpoint", len(addr) == 4)
 	rd := wire.RoomData{ServerID: 1, WorldID: 1, MaxSlot: uint16(maxSlot)}
-	els := wire.CreateJoinRoomReply(room.RoomID, rd, uint16(room.MemberNo), st.sess.OnlineID, st.sess.OnlineID, rnd(16), rnd(16))
+	me := wire.MemberInfo{No: room.MemberNo, Name: st.sess.OnlineID, Addr: addr, NAT: nat}
+	els := wire.CreateJoinRoomReply(room.RoomID, rd, me, tok, tok)
 	return wire.Reply(st.sess.Key, f.Cmd, 0, f.ReqID, els...)
 }
 
@@ -486,18 +529,181 @@ func (a *Agent) joinRoom(ctx context.Context, log *slog.Logger, t Title, st *con
 	}
 	st.room = j.ID
 	a.keepAlive(st)
-	log.Info("matching2 room joined", "session", j.ID, "by", how, "member", j.MemberNo)
+	addr, nat := a.publishEndpoint(ctx, log, j.ID, st.sess.Account, f)
+	tok, err := a.newRoomKey(ctx, j.ID, st.sess)
+	if err != nil {
+		log.Error("matching2 room key", "err", err)
+		return nil
+	}
+	log.Info("matching2 room joined", "session", j.ID, "by", how, "member", j.MemberNo, "endpoint", len(addr) == 4)
 	members := make([]wire.MemberInfo, 0, len(j.Members))
 	for _, m := range j.Members {
-		name := st.sess.OnlineID
+		mi := wire.MemberInfo{No: m.No, Name: st.sess.OnlineID, Addr: m.Addr, NAT: m.NAT}
 		if m.Account != st.sess.Account {
-			name = a.onlineID(ctx, m.Account)
+			mi.Name = a.onlineID(ctx, m.Account)
+		} else if len(addr) == 4 {
+			mi.Addr, mi.NAT = addr, nat
 		}
-		members = append(members, wire.MemberInfo{No: m.No, Name: name})
+		members = append(members, mi)
 	}
 	rd := wire.RoomData{ServerID: 1, WorldID: 1, MaxSlot: uint16(j.Max)}
-	els := wire.JoinRoomReply(uint16(j.MemberNo), j.RoomID, rd, members, rnd(16), rnd(16))
+	els := wire.JoinRoomReply(uint16(j.MemberNo), j.RoomID, rd, members, tok, tok)
 	return wire.Reply(st.sess.Key, f.Cmd, 0, f.ReqID, els...)
+}
+
+// publishEndpoint reads the console's own address from a 0x3200/0x3201 request (0x6e, 4 bytes = its public IPv4; 0x13 = NAT type,
+// inferred) and publishes it in the core as the member's "udp" endpoint.
+func (a *Agent) publishEndpoint(ctx context.Context, log *slog.Logger, room, account string, f *wire.Frame) ([]byte, byte) {
+	el := f.Elements()
+	addr := el[0x6e]
+	if len(addr) != 4 {
+		return nil, 0
+	}
+	var nat byte
+	if v := el[0x13]; len(v) == 1 {
+		nat = v[0]
+	}
+	if err := a.Rooms.SetEndpoints(ctx, room, account, addr, nat); err != nil {
+		log.Warn("matching2 endpoint", "err", err)
+	}
+	return addr, nat
+}
+
+// newRoomKey makes and stores the member's room key and returns the reply token that carries it (see wire.RoomKeyToken).
+func (a *Agent) newRoomKey(ctx context.Context, room string, sess *Session) ([]byte, error) {
+	key := rnd(16)
+	if a.Store != nil {
+		if err := a.Store.PutRoomKey(ctx, room, sess.Account, key); err != nil {
+			return nil, err
+		}
+	}
+	return wire.RoomKeyToken(sess.Key, key)
+}
+
+// latestRoom is the room an account most recently created or joined through this agent (a room request on a fresh connection).
+func (a *Agent) latestRoom(ctx context.Context, account string) string {
+	keys, err := a.Store.RecentRoomKeys(ctx, account)
+	if err != nil || len(keys) == 0 {
+		return ""
+	}
+	return keys[0].Room
+}
+
+// resolveRoomKey finds the member whose room key MACs this request: the connection's own account first, then every recent key.
+// On success the connection holds that member's room, key and login.
+func (a *Agent) resolveRoomKey(ctx context.Context, st *conn, f *wire.Frame) bool {
+	if a.Store == nil {
+		return false
+	}
+	try := func(account string) bool {
+		keys, err := a.Store.RecentRoomKeys(ctx, account)
+		if err != nil {
+			return false
+		}
+		for _, k := range keys {
+			if !f.Verify(k.Key) {
+				continue
+			}
+			sess := st.sess
+			if sess == nil || sess.Account != k.Account {
+				if sess, err = a.Store.SessionOf(ctx, st.comm, k.Account); err != nil || sess == nil {
+					return false
+				}
+			}
+			st.sess, st.room, st.roomKey = sess, k.Room, k.Key
+			return true
+		}
+		return false
+	}
+	if st.sess != nil && try(st.sess.Account) {
+		return true
+	}
+	return try("")
+}
+
+// roomRequest answers a room request MAC'd with the member's room key (or, from the test client, the session key): the reply is MAC'd
+// with the same key.
+func (a *Agent) roomRequest(ctx context.Context, log *slog.Logger, st *conn, f *wire.Frame) []byte {
+	key := st.sess.Key
+	if st.roomKey != nil {
+		key = st.roomKey
+	}
+	if a.Rooms != nil && st.room == "" {
+		st.room = a.latestRoom(ctx, st.sess.Account)
+	}
+	switch f.Cmd {
+	case 0x3202:
+		if a.Rooms != nil && st.room != "" {
+			a.Rooms.LeaveRoom(ctx, st.room, st.sess.Account)
+			log.Info("matching2 room left", "session", st.room, "room_key", st.roomKey != nil)
+			st.room = ""
+		}
+		return wire.Reply(key, f.Cmd, 0, f.ReqID)
+	}
+	if !a.Stats.Quiet(fmt.Sprint("unimpl", f.Cmd)) {
+		log.Warn("matching2 unimplemented room command", "elements", elementIDs(f.Elements()), "bytes", len(f.Raw), "hex", hex.EncodeToString(f.Redacted()))
+	}
+	return nil
+}
+
+// watch starts, once per plain connection with a login, the push of room events for that console (when RoomEvents is on).
+func (a *Agent) watch(st *conn) {
+	if !a.RoomEvents || st.watching || st.secure || st.sess == nil || a.Rooms == nil || a.Store == nil {
+		return
+	}
+	st.watching = true
+	account, online := st.sess.Account, st.sess.OnlineID
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		<-st.stop
+		cancel()
+	}()
+	go func() {
+		for ctx.Err() == nil {
+			err := a.Rooms.Watch(ctx, account, func(ev RoomEvent) { a.pushEvent(ctx, st, account, online, ev) })
+			if ctx.Err() != nil {
+				return
+			}
+			a.log().Warn("matching2 watch", "err", err)
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(5 * time.Second):
+			}
+		}
+	}()
+}
+
+// pushEvent turns a core event for this console into a Matching2 room event. Only MemberJoined (0x320c) is sent: the other events need
+// elements not decoded yet (0x62).
+func (a *Agent) pushEvent(ctx context.Context, st *conn, account, online string, ev RoomEvent) {
+	if ev.Type != "member_joined" || ev.Subject == account || ev.Session == "" {
+		return
+	}
+	log := a.log().With("session", ev.Session, "account", account)
+	key, err := a.Store.GetRoomKey(ctx, ev.Session, account)
+	if err != nil || key == nil {
+		log.Info("matching2 event skipped: no room key for this member", "event", ev.Type)
+		return
+	}
+	members, err := a.Rooms.Members(ctx, ev.Session, account)
+	if err != nil {
+		log.Warn("matching2 event members", "err", err)
+		return
+	}
+	for _, m := range members {
+		if m.Account != ev.Subject {
+			continue
+		}
+		mi := wire.MemberInfo{No: m.No, Name: a.onlineID(ctx, m.Account), Addr: m.Addr, NAT: m.NAT}
+		pkt := wire.Event(key, wire.EventMemberJoined, roomIDOf(ev.Session), wire.MemberOf(mi))
+		if err := st.write(pkt); err != nil {
+			log.Warn("matching2 event write", "err", err)
+			return
+		}
+		log.Info("matching2 event sent", "code", fmt.Sprintf("0x%04x", wire.EventMemberJoined), "member", m.No, "endpoint", len(m.Addr) == 4)
+		return
+	}
 }
 
 func (a *Agent) resolveSession(ctx context.Context, st *conn, f *wire.Frame) {

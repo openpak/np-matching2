@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.2.9
+
+Pieces for a real two-player join (prds#28; interfaces shared with the cross-network relay, prds#145):
+- **Keepalive echo.** A lone 0x00 on a plain connection is answered with 0x00. On hardware the console closed its main agent connection about 20 s after the server last sent anything, so a host had no open connection to receive room events.
+- **Room keys.** Each member gets a 16-byte room key, kept in `m2_room_keys`. The 0x3200/0x3201 reply tokens 0x24 and 0x21 both carry it as AES-128-ECB(session key[:16]), matching what the firmware does with the token (vsh 0x2903a8). Room requests MAC'd with the room key (0x3202 leave on a fresh connection) are resolved by that MAC and answered with the same key. Before this, a console's leave was refused. 0x1202 on a fresh connection finds the member's latest room.
+- **Peer address.** The console's own 0x6e (4 bytes, its public IPv4) and 0x13 (NAT type, inferred) from 0x3200/0x3201 are published in the core with SetEndpoints as a `udp` endpoint on port 3658. Every member's 0x4b now carries its address and NAT type back to the other members, in the join reply and in events.
+- **Room events** (`NP_MATCHING_ROOM_EVENTS=1`, default off): one core Watch per logged-in plain connection. MEMBER_JOINED becomes event 0x320c (the joiner's 0x4b, 64-bit room id at header +8, MAC with the receiver's room key). Codes come from the firmware's event table and handlers; the header layout is inferred. Left/owner events wait for element 0x62.
+
 ## v0.2.8
 
 Room members stay alive while their console is logged in: every 30 s the agent heartbeats each account with an unexpired login session (renewed by 0x1003). The per-connection keepalive was not enough on hardware: the console's room-server connection ends after the room is created and its later 0x1001/0x1007 traffic carries no account, so the core reaped a real PS3 host 5 minutes after creating its room (2026-11-06, prds#28).

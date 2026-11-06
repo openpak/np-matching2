@@ -3,9 +3,11 @@
 package agent_test
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"encoding/binary"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -22,6 +24,29 @@ import (
 type fakeRooms struct {
 	created, left, data int
 	beats               []string
+	endpoints           map[string][]byte // account -> published address
+	events              chan agent.RoomEvent
+}
+
+func (f *fakeRooms) SetEndpoints(_ context.Context, _, account string, addr []byte, _ byte) error {
+	if f.endpoints == nil {
+		f.endpoints = map[string][]byte{}
+	}
+	f.endpoints[account] = addr
+	return nil
+}
+func (f *fakeRooms) Members(context.Context, string, string) ([]agent.RoomMember, error) {
+	return []agent.RoomMember{{No: 1, Account: "11111111-1111-1111-1111-111111111111"}, {No: 2, Account: "33333333-3333-3333-3333-333333333333", Addr: []byte{10, 1, 2, 3}, NAT: 2}}, nil
+}
+func (f *fakeRooms) Watch(ctx context.Context, _ string, fn func(agent.RoomEvent)) error {
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case ev := <-f.events:
+			fn(ev)
+		}
+	}
 }
 
 func (f *fakeRooms) CreateRoom(_ context.Context, title, account string, max uint32, data []byte) (*agent.Room, error) {
@@ -59,17 +84,31 @@ func TestHandshake(t *testing.T) {
 	}
 	defer st.Close()
 	st.DB.Exec(ctx, `TRUNCATE m2_sessions`)
+	st.DB.Exec(ctx, `TRUNCATE m2_room_keys`)
 	_, priv, _ := ed25519.GenerateKey(rand.Reader)
 	signer, _ := ticket.New(priv, nil)
 	pass := make([]byte, 128)
 	rand.Read(pass)
 	const acct = "11111111-1111-1111-1111-111111111111"
-	fr := &fakeRooms{}
-	a := &agent.Agent{Titles: map[string]agent.Title{"NPWR04270_00": {Key: "terraria", Pass: pass}}, Store: st, Tickets: signer, Core: fakeCore{rooms: 3, members: 5}, Rooms: fr}
+	fr := &fakeRooms{events: make(chan agent.RoomEvent, 1)}
+	a := &agent.Agent{RoomEvents: true, Titles: map[string]agent.Title{"NPWR04270_00": {Key: "terraria", Pass: pass}}, Store: st, Tickets: signer, Core: fakeCore{rooms: 3, members: 5}, Rooms: fr}
 
+	// loopback TCP, not net.Pipe: the agent now writes without being asked (keepalive echoes, events), which an unbuffered pipe deadlocks
 	pair := func(h func(net.Conn)) net.Conn {
-		c, s := net.Pipe()
-		go h(s)
+		ln, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer ln.Close()
+		go func() {
+			if s, err := ln.Accept(); err == nil {
+				h(s)
+			}
+		}()
+		c, err := net.Dial("tcp", ln.Addr().String())
+		if err != nil {
+			t.Fatal(err)
+		}
 		return c
 	}
 	c := &client.Client{Comm: "NPWR04270_00", Pass: pass, Plain: pair(a.ServePlain), TLS: pair(a.ServeTLS)}
@@ -112,8 +151,16 @@ func TestHandshake(t *testing.T) {
 		t.Fatalf("renew: %v", err)
 	}
 
+	// a plain keepalive is answered with one (the firmware drops an agent connection the server leaves silent for ~20 s)
+	c.Plain.Write([]byte{0})
+	kb := make([]byte, 1)
+	c.Plain.SetReadDeadline(time.Now().Add(2 * time.Second))
+	if n, err := c.Plain.Read(kb); err != nil || n != 1 || kb[0] != 0 {
+		t.Fatalf("keepalive echo: %v %x", err, kb)
+	}
+
 	// room flow: 0x3200 creates a room and answers the five required elements; 0x1202 updates, 0x3202 leaves
-	rf, err := c.Call(0x3200, wire.TLV(0x3f, 4, []byte{0, 4}))
+	rf, err := c.Call(0x3200, wire.TLV(0x3f, 4, []byte{0, 4}), wire.TLV(0x13, 0, []byte{2}), wire.TLV(0x6e, 2, []byte{37, 228, 205, 125}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -126,6 +173,31 @@ func TestHandshake(t *testing.T) {
 	if fr.created != 1 || len(el[0x3a]) != 8 || el[0x3a][0] != 0xaa {
 		t.Fatalf("room %v %x", fr, el[0x3a])
 	}
+	// the console's own address is published in the core and echoed in its member; both tokens carry the stored room key
+	if a := fr.endpoints[acct]; len(a) != 4 || a[0] != 37 {
+		t.Fatalf("endpoint %v", fr.endpoints)
+	}
+	var roomKey []byte
+	st.DB.QueryRow(ctx, `SELECT key FROM m2_room_keys WHERE account=$1`, acct).Scan(&roomKey)
+	for _, id := range []uint16{0x24, 0x21} {
+		if k, err := wire.RoomKeyFromToken(c.Key, el[id]); err != nil || len(roomKey) != 16 || string(k) != string(roomKey) {
+			t.Fatalf("token 0x%x does not carry the room key: %v", id, err)
+		}
+	}
+	if !bytes.Contains(el[0x4b], []byte{0x20, 0x6e, 0x00, 0x04, 37, 228, 205, 125}) || !bytes.Contains(el[0x4b], []byte{2, 0}) {
+		t.Fatalf("member lacks the address/nat: %x", el[0x4b])
+	}
+
+	// a room event for this console reaches its plain connection, MAC'd with its room key
+	fr.events <- agent.RoomEvent{Type: "member_joined", Session: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", Subject: "33333333-3333-3333-3333-333333333333", To: acct, MemberNo: 2}
+	ef, err := client.ReadFrame(c.Plain)
+	if err != nil || ef.Kind != wire.KindEvent || ef.Cmd != wire.EventMemberJoined || !ef.Verify(roomKey) {
+		t.Fatalf("event: %v %+v", err, ef)
+	}
+	if ev := ef.Raw; binary.BigEndian.Uint64(ev[8:16]) != 0x0001aaaaaaaabbbb || !bytes.Contains(ef.Elements()[0x4b], []byte{10, 1, 2, 3}) {
+		t.Fatalf("event room id / joiner address: %x", ef.Raw)
+	}
+
 	sf, err := c.Call(0x1200)
 	if err != nil || len(sf.Elements()[0x03]) < 8+4+0x24+36 {
 		t.Fatalf("search: %v %x", err, sf.Elements()[0x03])
@@ -142,8 +214,18 @@ func TestHandshake(t *testing.T) {
 	if _, err := c.Call(0x1202, wire.TLV(0x3a, 2, el[0x3a])); err != nil || fr.data != 1 {
 		t.Fatalf("0x1202: %v %d", err, fr.data)
 	}
-	if _, err := c.Call(0x3202); err != nil || fr.left != 1 {
-		t.Fatalf("0x3202: %v %d", err, fr.left)
+	// the firmware MACs 0x3202 with its room key, on a fresh connection that names nobody; the reply carries the same key
+	// (the join above replaced this member's key for the room)
+	st.DB.QueryRow(ctx, `SELECT key FROM m2_room_keys WHERE account=$1`, acct).Scan(&roomKey)
+	c.Plain = pair(a.ServePlain)
+	c.Plain.Write([]byte{0})
+	c.Ping()
+	lf, err := c.CallKey(roomKey, 0x3202, wire.TLV(0x28, 0, []byte{0}))
+	if err != nil || fr.left != 1 {
+		t.Fatalf("0x3202 with the room key: %v %d", err, fr.left)
+	}
+	if !lf.Verify(roomKey) {
+		t.Fatal("0x3202 reply not MAC'd with the room key")
 	}
 
 	// a stranger's key is not answered; a wrong passphrase cannot log in
