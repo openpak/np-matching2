@@ -21,7 +21,7 @@ import (
 
 type fakeRooms struct{ created, left, data int }
 
-func (f *fakeRooms) CreateRoom(_ context.Context, title, account, display string, max uint32, data []byte) (*agent.Room, error) {
+func (f *fakeRooms) CreateRoom(_ context.Context, title, account string, max uint32, data []byte) (*agent.Room, error) {
 	f.created++
 	return &agent.Room{ID: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", RoomID: 0xaaaaaaaabbbbcccc, MemberNo: 1}, nil
 }
@@ -31,16 +31,16 @@ func (f *fakeRooms) SetRoomData(context.Context, string, string, []byte) error {
 	return nil
 }
 func (f *fakeRooms) Heartbeat(context.Context, string) {}
-func (f *fakeRooms) SearchRooms(context.Context, string, string, uint32) ([]agent.RoomInfo, error) {
-	return []agent.RoomInfo{{ID: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", RoomID: 0x0001aaaaaaaabbbb, Owner: "Host", Max: 4, Members: 1}}, nil
+func (f *fakeRooms) SearchRooms(context.Context, string, string, []string, uint32) ([]agent.RoomInfo, error) {
+	return []agent.RoomInfo{{ID: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", RoomID: 0x0001aaaaaaaabbbb, Owner: "33333333-3333-3333-3333-333333333333", Network: "np", Max: 4, Members: 1}}, nil
 }
-func (f *fakeRooms) JoinRoom(context.Context, string, string, string) (*agent.JoinedRoom, error) {
-	return &agent.JoinedRoom{ID: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", RoomID: 0x0001aaaaaaaabbbb, MemberNo: 2, Max: 4, Members: []agent.RoomMember{{No: 1, Name: "Host"}, {No: 2, Name: "Me"}}}, nil
+func (f *fakeRooms) JoinRoom(_ context.Context, _ string, account string) (*agent.JoinedRoom, error) {
+	return &agent.JoinedRoom{ID: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", RoomID: 0x0001aaaaaaaabbbb, MemberNo: 2, Max: 4, Members: []agent.RoomMember{{No: 1, Account: "33333333-3333-3333-3333-333333333333"}, {No: 2, Account: account}}}, nil
 }
 
 type fakeCore struct{ rooms, members uint32 }
 
-func (f fakeCore) Worlds(context.Context, string) (uint32, uint32, error) {
+func (f fakeCore) Worlds(context.Context, string, []string) (uint32, uint32, error) {
 	return f.rooms, f.members, nil
 }
 

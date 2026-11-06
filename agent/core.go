@@ -31,9 +31,9 @@ func (m *MatchmakingCore) ctx(ctx context.Context) context.Context {
 	return metadata.AppendToOutgoingContext(ctx, "x-internal-key", m.Key)
 }
 
-// Worlds counts the open and closed rooms of a title and their members.
-func (m *MatchmakingCore) Worlds(ctx context.Context, title string) (uint32, uint32, error) {
-	res, err := m.C.SearchSessions(m.ctx(ctx), &pb.SearchSessionsRequest{Title: &pb.TitleRef{Network: "np", Title: title}, IncludeClosed: true, Limit: 100})
+// Worlds counts the open and closed rooms of a title created from the given networks, and their members.
+func (m *MatchmakingCore) Worlds(ctx context.Context, title string, networks []string) (uint32, uint32, error) {
+	res, err := m.C.SearchSessions(m.ctx(ctx), &pb.SearchSessionsRequest{Title: &pb.TitleRef{Network: "np", Title: title}, Networks: networks, IncludeClosed: true, Limit: 100})
 	if err != nil {
 		return 0, 0, err
 	}
@@ -65,17 +65,21 @@ func roomIDOf(session string) uint64 {
 	return 1<<48 | binary.BigEndian.Uint64(append([]byte{0, 0}, b[:6]...))
 }
 
+// roomAttrs are the searchable attributes of a PS3 room: the compat group and the console. Never a name or any other identity:
+// names are resolved from the account core when a room is read (owner rule, prds#145).
+func roomAttrs() []*pb.Attr {
+	return []*pb.Attr{
+		{Name: "compat", Type: pb.AttrType_ATTR_TYPE_STRING, StringValue: compatPS3, Searchable: true},
+		{Name: "console", Type: pb.AttrType_ATTR_TYPE_STRING, StringValue: "ps3", Searchable: true},
+	}
+}
+
 // CreateRoom opens a Terraria room for the account: kind room under the neutral title key, attributes for the unified service
-// (compat group and console), the console's own request kept in the data blob.
-func (m *MatchmakingCore) CreateRoom(ctx context.Context, title, account, display string, maxSlot uint32, data []byte) (*Room, error) {
+// (compat group and console), the console's own request kept in the data blob. No display name goes to the core.
+func (m *MatchmakingCore) CreateRoom(ctx context.Context, title, account string, maxSlot uint32, data []byte) (*Room, error) {
 	res, err := m.C.CreateSession(m.ctx(ctx), &pb.CreateSessionRequest{
-		Title: &pb.TitleRef{Network: "np", Title: title}, Creator: account, DisplayName: display, Network: "np", Kind: "room",
-		MaxMembers: maxSlot, MigrateOwner: true, TtlSeconds: 300, Data: data,
-		Attrs: []*pb.Attr{
-			{Name: "compat", Type: pb.AttrType_ATTR_TYPE_STRING, StringValue: "old-gen-1.2.4", Searchable: true},
-			{Name: "console", Type: pb.AttrType_ATTR_TYPE_STRING, StringValue: "ps3", Searchable: true},
-			{Name: "owner_name", Type: pb.AttrType_ATTR_TYPE_STRING, StringValue: display, Searchable: true},
-		},
+		Title: &pb.TitleRef{Network: "np", Title: title}, Creator: account, Network: "np", Kind: "room",
+		MaxMembers: maxSlot, MigrateOwner: true, TtlSeconds: 300, Data: data, Attrs: roomAttrs(),
 	})
 	if err != nil {
 		return nil, err
@@ -98,19 +102,21 @@ func (m *MatchmakingCore) Heartbeat(ctx context.Context, account string) {
 	m.C.Heartbeat(m.ctx(ctx), &pb.HeartbeatRequest{AccountId: account})
 }
 
-// RoomInfo is one search result.
+// RoomInfo is one search result. Owner is the owner's core account id; the agent resolves its name at read time.
 type RoomInfo struct {
 	ID      string
 	RoomID  uint64
 	Owner   string
+	Network string // the network the room was created from ("np", "wiiu", ...)
 	Max     uint32
 	Members uint32
 }
 
-// SearchRooms lists open rooms of the title in the searcher's compatibility group (forced: a PS3 only sees old-gen-1.2.4 rooms).
-func (m *MatchmakingCore) SearchRooms(ctx context.Context, title, compat string, limit uint32) ([]RoomInfo, error) {
+// SearchRooms lists open rooms of the title in the searcher's compatibility group (forced by the caller: a PS3 only sees old-gen-1.2.4
+// rooms) created from the given networks (never empty: "np" alone keeps the search inside the PS3 network).
+func (m *MatchmakingCore) SearchRooms(ctx context.Context, title, compat string, networks []string, limit uint32) ([]RoomInfo, error) {
 	res, err := m.C.SearchSessions(m.ctx(ctx), &pb.SearchSessionsRequest{
-		Title: &pb.TitleRef{Network: "np", Title: title}, Network: "np", Kind: "room", OnlyWithFreeSlots: true, Limit: limit,
+		Title: &pb.TitleRef{Network: "np", Title: title}, Network: "np", Networks: networks, Kind: "room", OnlyWithFreeSlots: true, Limit: limit,
 		Filters: []*pb.Filter{{Attr: "compat", Op: "eq", IsString: true, StringValue: compat}},
 	})
 	if err != nil {
@@ -118,12 +124,9 @@ func (m *MatchmakingCore) SearchRooms(ctx context.Context, title, compat string,
 	}
 	var out []RoomInfo
 	for _, x := range res.GetSessions() {
-		ri := RoomInfo{ID: x.GetId(), RoomID: roomIDOf(x.GetId()), Max: x.GetMaxMembers()}
+		ri := RoomInfo{ID: x.GetId(), RoomID: roomIDOf(x.GetId()), Owner: x.GetOwnerId(), Network: x.GetTitle().GetNetwork(), Max: x.GetMaxMembers()}
 		for _, a := range x.GetAttrs() {
-			switch a.GetName() {
-			case "owner_name":
-				ri.Owner = a.GetStringValue()
-			case "$members":
+			if a.GetName() == "$members" {
 				ri.Members = uint32(a.GetIntValue())
 			}
 		}
@@ -141,19 +144,20 @@ type JoinedRoom struct {
 	Members  []RoomMember
 }
 
+// RoomMember is a member as the core holds it: a number and a core account id (the agent resolves the name).
 type RoomMember struct {
-	No   uint32
-	Name string
+	No      uint32
+	Account string
 }
 
-func (m *MatchmakingCore) JoinRoom(ctx context.Context, session, account, display string) (*JoinedRoom, error) {
-	res, err := m.C.JoinSession(m.ctx(ctx), &pb.JoinSessionRequest{SessionId: session, AccountId: account, DisplayName: display, Network: "np"})
+func (m *MatchmakingCore) JoinRoom(ctx context.Context, session, account string) (*JoinedRoom, error) {
+	res, err := m.C.JoinSession(m.ctx(ctx), &pb.JoinSessionRequest{SessionId: session, AccountId: account, Network: "np"})
 	if err != nil {
 		return nil, err
 	}
 	j := &JoinedRoom{ID: session, RoomID: roomIDOf(session), MemberNo: res.GetMemberNo(), Max: res.GetSession().GetMaxMembers()}
 	for _, mm := range res.GetSession().GetMembers() {
-		j.Members = append(j.Members, RoomMember{No: mm.GetMemberNo(), Name: mm.GetDisplayName()})
+		j.Members = append(j.Members, RoomMember{No: mm.GetMemberNo(), Account: mm.GetAccountId()})
 	}
 	return j, nil
 }

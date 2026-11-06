@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.2.7
+
+No identity copies in the core (owner rule, prds#145): rooms no longer carry an `owner_name` attribute and no display name is sent to the
+core on create or join. The owner's and members' NpIds are read from the account core (np link online id; an account without one shows
+its core display name cut to 16) each time a room is listed or joined.
+
+PS3 search, join and the world count stay inside network `np` (before, a PS3 search also listed the Wii U rooms the NEX mirror writes,
+and a join could land in one). `NP_MATCHING_CROSS_NETWORKS=wiiu` (default empty) lists the other networks' rooms of the same compat
+group; a join into one is refused and logged until the cross-network relay exists (phase 3).
+
 ## v0.2.6
 
 Real consoles get the agent as an IP (NP_MATCHING_HOST=145.241.199.19, paired with np-community NP_MATCHING_AGENT): the PS3 resolves the agent name outside the DNS catcher, and vsh checks the no-SNI leaf CN against that host, so the leaf now carries the IP. A hello with SNI `matching.np.community.playstation.net` (front.AgentName) still reaches the agent, so the headless testclient keeps working; the testclient always sends that name. First real-PS3 room created on 2026-11-06 (prds#28).

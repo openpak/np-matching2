@@ -28,18 +28,18 @@ type Title struct {
 
 // Core is what the agent needs from the matchmaking core.
 type Core interface {
-	// Worlds counts rooms and members for the world list.
-	Worlds(ctx context.Context, title string) (rooms, members uint32, err error)
+	// Worlds counts rooms and members for the world list (rooms created from the given networks).
+	Worlds(ctx context.Context, title string, networks []string) (rooms, members uint32, err error)
 }
 
 // Rooms is the room side of the matchmaking core.
 type Rooms interface {
-	CreateRoom(ctx context.Context, title, account, display string, maxSlot uint32, data []byte) (*Room, error)
+	CreateRoom(ctx context.Context, title, account string, maxSlot uint32, data []byte) (*Room, error)
 	LeaveRoom(ctx context.Context, session, account string) error
 	SetRoomData(ctx context.Context, session, account string, data []byte) error
 	Heartbeat(ctx context.Context, account string)
-	SearchRooms(ctx context.Context, title, compat string, limit uint32) ([]RoomInfo, error)
-	JoinRoom(ctx context.Context, session, account, display string) (*JoinedRoom, error)
+	SearchRooms(ctx context.Context, title, compat string, networks []string, limit uint32) ([]RoomInfo, error)
+	JoinRoom(ctx context.Context, session, account string) (*JoinedRoom, error)
 }
 
 // AccountCore verifies a ticket's account and link (np-common coreclient).
@@ -58,6 +58,31 @@ type Agent struct {
 	// RoomHost and RoomPort are the room-server endpoint handed to the console in the 0x1209 reply (this agent's plain port).
 	RoomHost string
 	RoomPort uint16
+	// CrossNetworks are the other networks whose rooms of the same compat group a PS3 search lists (NP_MATCHING_CROSS_NETWORKS,
+	// e.g. "wiiu"; default none). Listing only: a join into such a room is refused until the cross-network relay exists (prds#145).
+	CrossNetworks []string
+}
+
+// networks is the list of networks whose rooms this agent lists: np first, then the cross-network ones.
+func (a *Agent) networks() []string { return append([]string{"np"}, a.CrossNetworks...) }
+
+// onlineID is the name a PS3 shows for a core account: its np online id from the account core, read at the moment it is needed
+// (never stored in a room). An account without an np link shows its core display name cut to the 16 characters an NpId holds.
+func (a *Agent) onlineID(ctx context.Context, account string) string {
+	if a.Account == nil || account == "" {
+		return ""
+	}
+	if l, err := a.Account.GetLinkByAccount(ctx, account); err == nil && l.OnlineID != "" {
+		return l.OnlineID
+	}
+	if acc, err := a.Account.GetAccount(ctx, account); err == nil {
+		n := acc.DisplayName
+		if len(n) > 16 {
+			n = n[:16]
+		}
+		return n
+	}
+	return ""
 }
 
 func (a *Agent) log() *slog.Logger {
@@ -216,7 +241,7 @@ func (a *Agent) handle0(ctx context.Context, st *conn, f *wire.Frame) []byte {
 		var rooms, members uint32
 		if a.Core != nil {
 			var err error
-			if rooms, members, err = a.Core.Worlds(ctx, t.Key); err != nil {
+			if rooms, members, err = a.Core.Worlds(ctx, t.Key, a.networks()); err != nil {
 				log.Error("matching2 core", "err", err)
 			}
 		}
@@ -336,7 +361,7 @@ func (a *Agent) createRoom(ctx context.Context, log *slog.Logger, t Title, st *c
 			maxSlot = m
 		}
 	}
-	room, err := a.Rooms.CreateRoom(ctx, t.Key, st.sess.Account, st.sess.OnlineID, maxSlot, roomBlob(f))
+	room, err := a.Rooms.CreateRoom(ctx, t.Key, st.sess.Account, maxSlot, roomBlob(f))
 	if err != nil {
 		log.Error("matching2 create room", "err", err)
 		return nil
@@ -358,16 +383,20 @@ func (a *Agent) searchRooms(ctx context.Context, log *slog.Logger, t Title, st *
 	if a.Rooms == nil {
 		return nil
 	}
-	rooms, err := a.Rooms.SearchRooms(ctx, t.Key, compatPS3, 20)
+	rooms, err := a.Rooms.SearchRooms(ctx, t.Key, compatPS3, a.networks(), 20)
 	if err != nil {
 		log.Error("matching2 search", "err", err)
 		return nil
 	}
 	items := make([]wire.SearchItem, 0, len(rooms))
+	foreign := 0
 	for _, r := range rooms {
-		items = append(items, wire.SearchItem{RoomID: r.RoomID, MaxSlot: uint16(r.Max), Owner: r.Owner})
+		if r.Network != "np" {
+			foreign++
+		}
+		items = append(items, wire.SearchItem{RoomID: r.RoomID, MaxSlot: uint16(r.Max), Owner: a.onlineID(ctx, r.Owner)})
 	}
-	log.Info("matching2 search", "rooms", len(items), "bytes", len(f.Raw))
+	log.Info("matching2 search", "rooms", len(items), "cross_network", foreign, "bytes", len(f.Raw))
 	return wire.Reply(st.sess.Key, f.Cmd, 0, f.ReqID, wire.SearchRoomReply(items))
 }
 
@@ -377,7 +406,7 @@ func (a *Agent) joinRoom(ctx context.Context, log *slog.Logger, t Title, st *con
 	if a.Rooms == nil {
 		return nil
 	}
-	rooms, err := a.Rooms.SearchRooms(ctx, t.Key, compatPS3, 50)
+	rooms, err := a.Rooms.SearchRooms(ctx, t.Key, compatPS3, a.networks(), 50)
 	if err != nil || len(rooms) == 0 {
 		log.Warn("matching2 join: no room", "err", err)
 		return nil
@@ -400,7 +429,12 @@ func (a *Agent) joinRoom(ctx context.Context, log *slog.Logger, t Title, st *con
 			break
 		}
 	}
-	j, err := a.Rooms.JoinRoom(ctx, pick.ID, st.sess.Account, st.sess.OnlineID)
+	if pick.Network != "np" {
+		// Listing only (phase 1): a PS3 cannot reach a Wii U host until the relay terminates both transports (phase 3).
+		log.Warn("matching2 join refused: cross-network room, no relay yet", "session", pick.ID, "network", pick.Network, "by", how)
+		return nil
+	}
+	j, err := a.Rooms.JoinRoom(ctx, pick.ID, st.sess.Account)
 	if err != nil {
 		log.Warn("matching2 join refused", "err", err)
 		return nil
@@ -410,7 +444,11 @@ func (a *Agent) joinRoom(ctx context.Context, log *slog.Logger, t Title, st *con
 	log.Info("matching2 room joined", "session", j.ID, "by", how, "member", j.MemberNo)
 	members := make([]wire.MemberInfo, 0, len(j.Members))
 	for _, m := range j.Members {
-		members = append(members, wire.MemberInfo{No: m.No, Name: m.Name})
+		name := st.sess.OnlineID
+		if m.Account != st.sess.Account {
+			name = a.onlineID(ctx, m.Account)
+		}
+		members = append(members, wire.MemberInfo{No: m.No, Name: name})
 	}
 	rd := wire.RoomData{ServerID: 1, WorldID: 1, MaxSlot: uint16(j.Max)}
 	els := wire.JoinRoomReply(uint16(j.MemberNo), j.RoomID, rd, members, rnd(16), rnd(16))
