@@ -13,6 +13,7 @@ import (
 	"log/slog"
 	"net"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"openpak/np-common/ticket"
@@ -64,12 +65,15 @@ type Agent struct {
 	// RoomHost and RoomPort are the room-server endpoint handed to the console in the 0x1209 reply (this agent's plain port).
 	RoomHost string
 	RoomPort uint16
-	// CrossNetworks are the other networks whose rooms of the same compat group a PS3 search lists (NP_MATCHING_CROSS_NETWORKS,
-	// e.g. "wiiu"; default none). Listing only: a join into such a room is refused until the cross-network relay exists (prds#145).
+	// CrossNetworks are the other networks whose rooms of the same compat group a PS3 search lists. Cross-play is always on
+	// (owner rule, prds#145): main sets ["wiiu"] unless the incident kill switch NP_MATCHING_CROSSPLAY_OFF=1 is set. A join into
+	// such a room is answered with ROOM_FULL and counted until the cross-network relay exists.
 	CrossNetworks []string
 	// RoomEvents turns on the push of room events (MemberJoined, kind 4) to the members' open connections (NP_MATCHING_ROOM_EVENTS=1).
 	// Off by default: the event header layout is inferred from the firmware and not yet seen accepted by a console.
 	RoomEvents bool
+	// CrossJoinsRefused counts cross-network joins answered with an error since start (the visible gap until the relay).
+	CrossJoinsRefused atomic.Int64
 	// HeartbeatEvery is how often RunHeartbeats refreshes the room members of every console with a live login (default 30 s).
 	HeartbeatEvery time.Duration
 }
@@ -116,6 +120,10 @@ func (a *Agent) HeartbeatActive(ctx context.Context) int {
 	}
 	return len(seen)
 }
+
+// errRoomFull is the result byte of SCE_NP_MATCHING2_SERVER_ERROR_ROOM_FULL (0x80022b19; the reply's result byte is taken as
+// the low byte of the server error, inferred): the closest error the game already shows a player as "could not join".
+const errRoomFull = 0x19
 
 // networks is the list of networks whose rooms this agent lists: np first, then the cross-network ones.
 func (a *Agent) networks() []string { return append([]string{"np"}, a.CrossNetworks...) }
@@ -518,9 +526,10 @@ func (a *Agent) joinRoom(ctx context.Context, log *slog.Logger, t Title, st *con
 		}
 	}
 	if pick.Network != "np" {
-		// Listing only (phase 1): a PS3 cannot reach a Wii U host until the relay terminates both transports (phase 3).
-		log.Warn("matching2 join refused: cross-network room, no relay yet", "session", pick.ID, "network", pick.Network, "by", how)
-		return nil
+		// A PS3 cannot reach a Wii U host until the relay terminates both transports: answer, log and count it.
+		n := a.CrossJoinsRefused.Add(1)
+		log.Warn("cross-play join not yet supported (relay pending)", "session", pick.ID, "network", pick.Network, "by", how, "refused_since_start", n)
+		return wire.Reply(st.sess.Key, f.Cmd, errRoomFull, f.ReqID)
 	}
 	j, err := a.Rooms.JoinRoom(ctx, pick.ID, st.sess.Account)
 	if err != nil {
