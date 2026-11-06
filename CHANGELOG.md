@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.2.8
+
+Room members stay alive while their console is logged in: every 30 s the agent heartbeats each account with an unexpired login session (renewed by 0x1003). The per-connection keepalive was not enough on hardware: the console's room-server connection ends after the room is created and its later 0x1001/0x1007 traffic carries no account, so the core reaped a real PS3 host 5 minutes after creating its room (2026-11-06, prds#28).
+
 ## v0.2.7
 
 No identity copies in the core (owner rule, prds#145): rooms no longer carry an `owner_name` attribute and no display name is sent to the

@@ -61,6 +61,51 @@ type Agent struct {
 	// CrossNetworks are the other networks whose rooms of the same compat group a PS3 search lists (NP_MATCHING_CROSS_NETWORKS,
 	// e.g. "wiiu"; default none). Listing only: a join into such a room is refused until the cross-network relay exists (prds#145).
 	CrossNetworks []string
+	// HeartbeatEvery is how often RunHeartbeats refreshes the room members of every console with a live login (default 30 s).
+	HeartbeatEvery time.Duration
+}
+
+// RunHeartbeats keeps the core membership of every logged-in console fresh until ctx ends. A console's room-server connection
+// does not outlive the room creation, and its later traffic (0x1001, 0x1007) is MAC'd with the title passphrase, so it names no
+// account: the login session (renewed with 0x1003, SessionTTL) is the signal that the console is still online. Without this the
+// core reaped the host after the session ttl (300 s) while it was still hosting (real PS3, 2026-11-06).
+func (a *Agent) RunHeartbeats(ctx context.Context) {
+	every := a.HeartbeatEvery
+	if every <= 0 {
+		every = 30 * time.Second
+	}
+	t := time.NewTicker(every)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			a.HeartbeatActive(ctx)
+		}
+	}
+}
+
+// HeartbeatActive heartbeats each account with an unexpired login session once and returns how many accounts it touched.
+func (a *Agent) HeartbeatActive(ctx context.Context) int {
+	if a.Rooms == nil || a.Store == nil {
+		return 0
+	}
+	seen := map[string]bool{}
+	for comm := range a.Titles {
+		sessions, err := a.Store.Active(ctx, comm)
+		if err != nil {
+			a.log().Error("matching2 heartbeat sessions", "err", err)
+			continue
+		}
+		for _, s := range sessions {
+			if !seen[s.Account] {
+				seen[s.Account] = true
+				a.Rooms.Heartbeat(ctx, s.Account)
+			}
+		}
+	}
+	return len(seen)
 }
 
 // networks is the list of networks whose rooms this agent lists: np first, then the cross-network ones.

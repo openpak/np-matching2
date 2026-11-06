@@ -19,7 +19,10 @@ import (
 	"openpak/np-matching2/wire"
 )
 
-type fakeRooms struct{ created, left, data int }
+type fakeRooms struct {
+	created, left, data int
+	beats               []string
+}
 
 func (f *fakeRooms) CreateRoom(_ context.Context, title, account string, max uint32, data []byte) (*agent.Room, error) {
 	f.created++
@@ -30,7 +33,7 @@ func (f *fakeRooms) SetRoomData(context.Context, string, string, []byte) error {
 	f.data++
 	return nil
 }
-func (f *fakeRooms) Heartbeat(context.Context, string) {}
+func (f *fakeRooms) Heartbeat(_ context.Context, account string) { f.beats = append(f.beats, account) }
 func (f *fakeRooms) SearchRooms(context.Context, string, string, []string, uint32) ([]agent.RoomInfo, error) {
 	return []agent.RoomInfo{{ID: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", RoomID: 0x0001aaaaaaaabbbb, Owner: "33333333-3333-3333-3333-333333333333", Network: "np", Max: 4, Members: 1}}, nil
 }
@@ -83,6 +86,12 @@ func TestHandshake(t *testing.T) {
 	}
 	if _, err := c.Login(tk, "PS3Test", "PS3 Test User"); err != nil || len(c.Key) != 20 {
 		t.Fatalf("login: %v", err)
+	}
+
+	// the login keeps the account's room membership alive without any room-server connection
+	fr.beats = nil
+	if n := a.HeartbeatActive(ctx); n != 1 || len(fr.beats) != 1 || fr.beats[0] != acct {
+		t.Fatalf("heartbeat: %d %v", n, fr.beats)
 	}
 
 	// a fresh plain connection finds the session by its MAC

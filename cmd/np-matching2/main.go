@@ -87,6 +87,8 @@ func run() error {
 		}
 	}()
 
+	go a.RunHeartbeats(ctx)
+
 	plain, err := net.Listen("tcp", nphttp.Env("NP_PLAIN_ADDR", ":3480"))
 	if err != nil {
 		return err
