@@ -141,3 +141,18 @@ func TestClassifyD2RReplayPrefix(t *testing.T) {
 		t.Fatal("modern completion classified as firmware")
 	}
 }
+
+// With the advertised host an IP (real consoles), a modern hello naming the Matching2 hostname still reaches the agent.
+func TestHandleAgentNameWithIPHost(t *testing.T) {
+	a, b := net.Pipe()
+	go tls.Client(a, &tls.Config{ServerName: AgentName, InsecureSkipVerify: true}).Handshake()
+	route := make(chan string, 1)
+	h := Handlers{AgentHost: "145.241.199.19",
+		Legacy: func(c net.Conn) { route <- "legacy"; c.Close() },
+		Other:  func(c net.Conn) { route <- "other"; c.Close() }}
+	go h.handle(b)
+	if r := <-route; r != "legacy" {
+		t.Fatalf("routed to %s", r)
+	}
+	a.Close()
+}

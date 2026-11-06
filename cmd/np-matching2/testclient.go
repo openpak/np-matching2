@@ -11,6 +11,7 @@ import (
 	"openpak/np-common/nphttp"
 	"openpak/np-common/ticket"
 	"openpak/np-matching2/client"
+	"openpak/np-matching2/front"
 	"openpak/np-matching2/wire"
 	"os"
 	"time"
@@ -54,7 +55,7 @@ func testclient(args []string) error {
 	if err != nil {
 		return err
 	}
-	c.TLS = tls.Client(tc, &tls.Config{ServerName: nphttp.Env("NP_MATCHING_HOST", "matching.np.community.playstation.net"), InsecureSkipVerify: true, MaxVersion: tls.VersionTLS12, CipherSuites: []uint16{tls.TLS_RSA_WITH_AES_128_CBC_SHA, tls.TLS_RSA_WITH_AES_256_CBC_SHA}})
+	c.TLS = tls.Client(tc, &tls.Config{ServerName: front.AgentName, InsecureSkipVerify: true, MaxVersion: tls.VersionTLS12, CipherSuites: []uint16{tls.TLS_RSA_WITH_AES_128_CBC_SHA, tls.TLS_RSA_WITH_AES_256_CBC_SHA}})
 	if _, err := c.Ping(); err != nil {
 		return fmt.Errorf("ping: %w", err)
 	}

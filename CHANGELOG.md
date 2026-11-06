@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.2.6
+
+Real consoles get the agent as an IP (NP_MATCHING_HOST=145.241.199.19, paired with np-community NP_MATCHING_AGENT): the PS3 resolves the agent name outside the DNS catcher, and vsh checks the no-SNI leaf CN against that host, so the leaf now carries the IP. A hello with SNI `matching.np.community.playstation.net` (front.AgentName) still reaches the agent, so the headless testclient keeps working; the testclient always sends that name. First real-PS3 room created on 2026-11-06 (prds#28).
+
 ## v0.2.5
 
 A room member is heartbeated in the core every 30 s while its room-server connection is open (the console's keepalive bytes carry no account); before, the core reaped the host after 5 minutes.

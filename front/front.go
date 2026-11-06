@@ -163,6 +163,10 @@ type replay struct {
 
 func (p *replay) Read(b []byte) (int, error) { return p.r.Read(b) }
 
+// AgentName is the firmware's Matching2 hostname. A hello naming it always goes to the agent, also when the advertised
+// host (NP_MATCHING_HOST) is an IP literal for real consoles; the headless testclient relies on this.
+const AgentName = "matching.np.community.playstation.net"
+
 // Handlers are the two destinations.
 type Handlers struct {
 	Legacy func(net.Conn) // the Matching2 agent's TLS side
@@ -190,7 +194,7 @@ func (h Handlers) handle(c net.Conn) {
 		return
 	}
 	k := Classify(rec)
-	if h.AgentHost != "" && SNI(rec) == h.AgentHost {
+	if sni := SNI(rec); sni != "" && (sni == h.AgentHost || sni == AgentName) {
 		k = Legacy
 	}
 	if h.Log != nil {
