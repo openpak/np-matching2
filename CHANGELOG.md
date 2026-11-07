@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.2.10
+
+A request signed with a newer login's key on a connection pinned to an older login is re-resolved against the active logins instead of being refused as "no session for request". Real PS3 (2026-11-07): the console logged in twice, sent the CreateJoinRoom first step (0x1209) signed with the second login's key on the plain connection pinned to the first, and got no reply, so the hosted world never became a room.
+
 ## v0.2.9
 
 Pieces for a real two-player join (prds#28; interfaces shared with the cross-network relay, prds#145):

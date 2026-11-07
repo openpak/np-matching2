@@ -292,13 +292,16 @@ func (a *Agent) handle0(ctx context.Context, st *conn, f *wire.Frame) []byte {
 			return a.roomRequest(ctx, log, st, f)
 		}
 	}
-	// Everything else is MAC'd with the session key of a login.
-	if st.sess == nil {
+	// Everything else is MAC'd with the session key of a login. A console that logs in again keeps
+	// using a connection pinned to the first login (real PS3, 2026-11-07), so a pinned session that
+	// does not verify is re-resolved against the active logins before the request is refused.
+	if st.sess == nil || !f.Verify(st.sess.Key) {
 		sessions, err := a.Store.Active(ctx, st.comm)
 		if err != nil {
 			log.Error("matching2 sessions", "err", err)
 			return nil
 		}
+		st.sess = nil
 		for _, s := range sessions {
 			if f.Verify(s.Key) {
 				st.sess = s
@@ -306,7 +309,7 @@ func (a *Agent) handle0(ctx context.Context, st *conn, f *wire.Frame) []byte {
 			}
 		}
 	}
-	if st.sess == nil || !f.Verify(st.sess.Key) {
+	if st.sess == nil {
 		if !a.Stats.Quiet(fmt.Sprint("nosess", f.Cmd)) {
 			log.Info("matching2 no session for request")
 		}

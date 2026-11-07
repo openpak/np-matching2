@@ -151,6 +151,18 @@ func TestHandshake(t *testing.T) {
 		t.Fatalf("renew: %v", err)
 	}
 
+	// A real console logs in again and sends the next request, signed with the new key, on the plain
+	// connection the agent already pinned to the first login (real PS3, 2026-11-07: the 0x1209 was
+	// dropped as "no session for request"). The agent must re-resolve, not verify against the stale key.
+	firstKey := append([]byte(nil), c.Key...)
+	if _, err := c.Login(tk, "PS3Test", "PS3 Test User"); err != nil || len(c.Key) != 20 || bytes.Equal(c.Key, firstKey) {
+		t.Fatalf("second login: %v", err)
+	}
+	pf, err := c.Call(wire.CmdUnknown1209, wire.TLV(0x29, 4, []byte{0, 1}))
+	if err != nil || len(pf.Elements()[0x20]) == 0 {
+		t.Fatalf("0x1209 after second login on the pinned plain connection: %v", err)
+	}
+
 	// a plain keepalive is answered with one (the firmware drops an agent connection the server leaves silent for ~20 s)
 	c.Plain.Write([]byte{0})
 	kb := make([]byte, 1)
