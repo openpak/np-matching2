@@ -808,10 +808,30 @@ func (a *Agent) pushEvent(ctx context.Context, st *conn, account, online string,
 		log.Info("matching2 event skipped: no room key for this member", "event", ev.Type)
 		return
 	}
-	members, err := a.Rooms.Members(ctx, ev.Session, account)
-	if err != nil {
-		log.Warn("matching2 event members", "err", err)
-		return
+	// The subject's endpoint is published by its own agent connection just after the core join
+	// returns, which can land after this event: refetch briefly so the MemberJoined carries the
+	// endpoint the firmware needs to reach the new member.
+	var members []RoomMember
+	for attempt := 0; ; attempt++ {
+		members, err = a.Rooms.Members(ctx, ev.Session, account)
+		if err != nil {
+			log.Warn("matching2 event members", "err", err)
+			return
+		}
+		addr := false
+		for _, m := range members {
+			if m.Account == ev.Subject && len(m.Addr) == 4 {
+				addr = true
+			}
+		}
+		if addr || attempt >= 8 {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(250 * time.Millisecond):
+		}
 	}
 	for _, m := range members {
 		if m.Account != ev.Subject {
