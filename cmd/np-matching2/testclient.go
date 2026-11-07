@@ -17,6 +17,35 @@ import (
 	"time"
 )
 
+// issueTicket prints (to stdout, nothing else) a fresh NP ticket for an online id, resolved through the
+// account core and signed with the agent's key. Used to sign other headless participants (the Terraria
+// relay's RT signaling probe) into NP services as that account.
+func issueTicket(args []string) error {
+	if len(args) < 1 {
+		return fmt.Errorf("usage: ticket <online id>")
+	}
+	ctx := context.Background()
+	core, err := coreclient.Dial(nphttp.Env("NP_CORE_ADDR", "localhost:7000"), os.Getenv("NP_CORE_KEY"))
+	if err != nil {
+		return err
+	}
+	defer core.Close()
+	link, err := core.GetLinkByOnlineID(ctx, args[0])
+	if err != nil {
+		return fmt.Errorf("account %s: %w", args[0], err)
+	}
+	signer, err := ticket.Load(os.Getenv("NP_TICKET_KEY"))
+	if err != nil {
+		return err
+	}
+	tk, err := signer.Issue(ticket.Identity{AccountID: link.AccountID, LinkID: link.LinkID, OnlineID: link.OnlineID, Country: "pt", Service: "IV0001-NPXS01001_00"}, time.Hour)
+	if err != nil {
+		return err
+	}
+	_, err = os.Stdout.Write(tk)
+	return err
+}
+
 // testclient is a headless second player run inside the container: `np-matching2 testclient <online id> [leave]`. It logs in as another
 // test account (a ticket issued with the agent's own key; the account must exist in the core), searches the rooms of the group and joins
 // the newest one, printing what the firmware would receive. Test accounts (@openpak.org) only.

@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.2.14
+
+New `np-matching2 ticket <online id>` mode: prints a fresh NP ticket for the account (resolved through the account core, signed with the agent's key) and nothing else. It signs headless NP participants in as an account — first user is the Terraria relay's RT signaling probe (`terraria signalprobe`).
+
 ## v0.2.13
 
 Room messages: SendRoomChatMessage (0x3208) and SendRoomMessage (0x320a) are answered and forwarded to the room's other members as the matching message events (0x3209 chat / 0x320b message, room-key MAC'd), with the 16-byte destination passed through and echoed (protocol doc §24). The test client gains a `msg` mode that sends one broadcast room message and holds the join for a minute.
