@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.2.12
+
+The headless test client can publish a member endpoint on JoinRoom like a real console (`NP_TESTCLIENT_PUBLIC_IP`: element 0x6e = public IPv4, 0x13 = NAT type) and can hold the join open (`testclient <id> hold`, 180 s). For the PS3 relay's signaling capture: a host that is told about the new member has an address to signal to (prds#145).
+
 ## v0.2.11
 
 A request signed with a newer login's key on a connection pinned to an older login is re-resolved against the active logins instead of being refused as "no session for request". Real PS3 (2026-11-07): the console logged in twice, sent the CreateJoinRoom first step (0x1209) signed with the second login's key on the plain connection pinned to the first, and got no reply, so the hosted world never became a room.

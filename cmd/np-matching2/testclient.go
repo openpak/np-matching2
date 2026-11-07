@@ -82,7 +82,19 @@ func testclient(args []string) error {
 	// first item: 0x45 TLV starts at s[8]; its value starts at s[12]: three u16 = low 48 bits of the room id
 	a, b, cc := binary.BigEndian.Uint16(s[12:]), binary.BigEndian.Uint16(s[14:]), binary.BigEndian.Uint16(s[16:])
 	fmt.Printf("room id parts: %04x %04x %04x\n", a, b, cc)
-	jf, err := c.Call(0x3201, wire.TLV(0x3e, 4, binary.BigEndian.AppendUint16(nil, cc)))
+	// With NP_TESTCLIENT_PUBLIC_IP set the join carries the member endpoint a real console sends
+	// (0x6e = public IPv4, 0x13 = NAT type), so the host learns an address to signal to; the
+	// signaling capture runs with it set to the box address and a UDP listener on 3658.
+	joinElems := [][]byte{wire.TLV(0x3e, 4, binary.BigEndian.AppendUint16(nil, cc))}
+	if v := os.Getenv("NP_TESTCLIENT_PUBLIC_IP"); v != "" {
+		ip := net.ParseIP(v).To4()
+		if ip == nil {
+			return fmt.Errorf("NP_TESTCLIENT_PUBLIC_IP %q: not an IPv4 address", v)
+		}
+		joinElems = append(joinElems, wire.TLV(0x6e, 2, ip), wire.TLV(0x13, 3, []byte{2}))
+		fmt.Println("publishing endpoint", v)
+	}
+	jf, err := c.Call(0x3201, joinElems...)
 	if err != nil {
 		return fmt.Errorf("join: %w", err)
 	}
@@ -95,6 +107,12 @@ func testclient(args []string) error {
 			return err
 		}
 		fmt.Println("left")
+	}
+	if len(args) > 1 && args[1] == "hold" {
+		// Stay joined (connections open) while the host reacts to the new member: the signaling capture window.
+		fmt.Println("holding the join for 180s")
+		time.Sleep(180 * time.Second)
+		fmt.Println("hold over")
 	}
 	return nil
 }
