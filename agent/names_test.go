@@ -133,8 +133,10 @@ func TestCrossNetworkListsButRefusesJoin(t *testing.T) {
 	}
 	// Join naming the Wii U room by its room id is refused (no relay yet); the PS3 room still joins.
 	wiiu := wire.TLV(0x3a, 2, []byte{0, 1, 0x22, 0x22, 0x22, 0x22, 0, 0})
-	if a.joinRoom(context.Background(), a.log(), Title{}, st, frame(0x3201, wiiu)) != nil || r.joined != 0 {
-		t.Fatal("a cross-network join must be refused until the relay exists")
+	refused := a.joinRoom(context.Background(), a.log(), Title{}, st, frame(0x3201, wiiu))
+	rf, _, _ := wire.Parse(refused)
+	if rf == nil || rf.Result != errRoomFull || r.joined != 0 || a.CrossJoinsRefused.Load() != 1 {
+		t.Fatal("a cross-network join must be answered with ROOM_FULL and counted until the relay exists")
 	}
 	ps := wire.TLV(0x3a, 2, []byte{0, 1, 0x11, 0x11, 0x11, 0x11, 0, 0})
 	out = a.joinRoom(context.Background(), a.log(), Title{}, st, frame(0x3201, ps))

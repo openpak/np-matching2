@@ -19,7 +19,6 @@ import (
 	"openpak/np-matching2/front"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
 	"time"
 )
@@ -71,9 +70,12 @@ func run() error {
 	}
 	defer conn.Close()
 	a := &agent.Agent{Rooms: mm, Titles: titles, Store: store, Tickets: signer, Account: acct, Core: mm, Log: log, RoomHost: nphttp.Env("NP_MATCHING_HOST", "matching.np.community.playstation.net"), RoomPort: 3480, RoomEvents: os.Getenv("NP_MATCHING_ROOM_EVENTS") == "1"}
-	a.CrossNetworks = crossNetworks(os.Getenv("NP_MATCHING_CROSS_NETWORKS"))
-	if len(a.CrossNetworks) > 0 {
-		log.Info("np-matching2 cross-network listing on", "networks", a.CrossNetworks)
+	// Cross-play is always on: PS3 search lists the Wii U rooms of the group. NP_MATCHING_CROSSPLAY_OFF=1 is an incident kill switch.
+	if os.Getenv("NP_MATCHING_CROSSPLAY_OFF") == "1" {
+		log.Warn("np-matching2 cross-play listing OFF (kill switch NP_MATCHING_CROSSPLAY_OFF)")
+	} else {
+		a.CrossNetworks = []string{"wiiu"}
+		log.Info("np-matching2 cross-play listing on", "networks", a.CrossNetworks)
 	}
 
 	if dir := os.Getenv("NP_CAPTURE_DIR"); dir != "" {
@@ -122,20 +124,6 @@ func run() error {
 	nphttp.Health(mux)
 	log.Info("np-matching2 up", "titles", len(titles))
 	return nphttp.Run(ctx, mux, nphttp.Env("NP_HTTP_ADDR", ":8538"), "", nil)
-}
-
-// crossNetworks parses NP_MATCHING_CROSS_NETWORKS ("wiiu" or "wiiu,x360"): the other networks whose rooms a PS3 search lists.
-// Empty (the default) keeps the search inside np. "np" itself and malformed names are dropped.
-func crossNetworks(v string) []string {
-	var out []string
-	for _, n := range strings.Split(v, ",") {
-		n = strings.TrimSpace(n)
-		if n == "" || n == "np" || strings.Trim(n, "abcdefghijklmnopqrstuvwxyz0123456789") != "" {
-			continue
-		}
-		out = append(out, n)
-	}
-	return out
 }
 
 func serve(ln net.Listener, h func(net.Conn)) {

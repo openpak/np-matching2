@@ -1,8 +1,15 @@
 # Changelog
 
-## v0.2.10
+## v0.2.11
 
 A request signed with a newer login's key on a connection pinned to an older login is re-resolved against the active logins instead of being refused as "no session for request". Real PS3 (2026-11-07): the console logged in twice, sent the CreateJoinRoom first step (0x1209) signed with the second login's key on the plain connection pinned to the first, and got no reply, so the hosted world never became a room.
+
+## v0.2.10
+
+Cross-play is always on (owner rule, prds#145): PS3 search lists the Wii U rooms of the same compat group by default;
+`NP_MATCHING_CROSS_NETWORKS` is gone, `NP_MATCHING_CROSSPLAY_OFF=1` is an incident kill switch. A join into a Wii U room is answered
+with ROOM_FULL (result byte 0x19, inferred mapping of 0x80022b19) instead of silence, logged as "cross-play join not yet supported
+(relay pending)" and counted, until the relay exists.
 
 ## v0.2.9
 
