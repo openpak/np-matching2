@@ -102,6 +102,20 @@ func testclient(args []string) error {
 		fmt.Printf("0x3201 reply element 0x%02x: %d bytes\n", id, len(jf.Elements()[id]))
 	}
 	fmt.Println("member id:", hex.EncodeToString(jf.Elements()[0x16]))
+	if len(args) > 1 && args[1] == "msg" {
+		// Send one broadcast room message (§24) so a live host's reaction can be watched.
+		dest := make([]byte, 16)
+		dest[0] = 1
+		mf, err := c.Call(wire.CmdSendRoomMessage, wire.TLV(0x44, 7, dest), wire.TLV(0x1b, 2, []byte("openpak-room-message")))
+		if err != nil {
+			return fmt.Errorf("room message: %w", err)
+		}
+		for id, v := range mf.Elements() {
+			fmt.Printf("0x320a reply element 0x%02x: %d bytes\n", id, len(v))
+		}
+		fmt.Println("holding the join for 60s after the message")
+		time.Sleep(60 * time.Second)
+	}
 	if len(args) > 1 && args[1] == "leave" {
 		if _, err := c.Call(0x3202); err != nil {
 			return err

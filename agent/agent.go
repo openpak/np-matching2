@@ -76,6 +76,41 @@ type Agent struct {
 	CrossJoinsRefused atomic.Int64
 	// HeartbeatEvery is how often RunHeartbeats refreshes the room members of every console with a live login (default 30 s).
 	HeartbeatEvery time.Duration
+
+	msgMu    sync.Mutex
+	msgConns map[string]*conn // account -> a plain connection room events/messages can be pushed on
+}
+
+// registerConn remembers a plain logged-in connection as a push target for its account (room messages, §24);
+// unregisterConn drops it when the connection ends.
+func (a *Agent) registerConn(st *conn) {
+	if st.secure || st.sess == nil {
+		return
+	}
+	a.msgMu.Lock()
+	defer a.msgMu.Unlock()
+	if a.msgConns == nil {
+		a.msgConns = map[string]*conn{}
+	}
+	a.msgConns[st.sess.Account] = st
+}
+
+func (a *Agent) unregisterConn(st *conn) {
+	a.msgMu.Lock()
+	defer a.msgMu.Unlock()
+	for account, c := range a.msgConns {
+		if c == st {
+			delete(a.msgConns, account)
+		}
+	}
+}
+
+// sendToAccount pushes a packet on the account's registered connection, if it has one.
+func (a *Agent) sendToAccount(account string, pkt []byte) bool {
+	a.msgMu.Lock()
+	c := a.msgConns[account]
+	a.msgMu.Unlock()
+	return c != nil && c.write(pkt) == nil
 }
 
 // RunHeartbeats keeps the core membership of every logged-in console fresh until ctx ends. A console's room-server connection
@@ -183,6 +218,7 @@ func (a *Agent) serve(c net.Conn, secure bool) {
 	defer c.Close()
 	st := &conn{stop: make(chan struct{}), w: c, secure: secure}
 	defer close(st.stop)
+	defer a.unregisterConn(st)
 	buf := make([]byte, 0x6000)
 	for {
 		c.SetReadDeadline(time.Now().Add(60 * time.Second))
@@ -213,6 +249,7 @@ func (a *Agent) serve(c net.Conn, secure bool) {
 						return
 					}
 				}
+				a.registerConn(st)
 				a.watch(st)
 			}
 		}
@@ -353,6 +390,9 @@ func (a *Agent) handle0(ctx context.Context, st *conn, f *wire.Frame) []byte {
 	case 0x3201:
 		return a.joinRoom(ctx, log, t, st, f)
 	case 0x3202:
+		return a.roomRequest(ctx, log, st, f)
+	case wire.CmdSendRoomChatMessage, wire.CmdSendRoomMessage:
+		// Room messages are room-key MAC'd from a console; a session-key one (the test client) is answered here.
 		return a.roomRequest(ctx, log, st, f)
 	case 0x1202:
 		if a.Rooms != nil && st.room == "" {
@@ -651,11 +691,81 @@ func (a *Agent) roomRequest(ctx context.Context, log *slog.Logger, st *conn, f *
 			st.room = ""
 		}
 		return wire.Reply(key, f.Cmd, 0, f.ReqID)
+	case wire.CmdSendRoomChatMessage, wire.CmdSendRoomMessage:
+		return a.roomMessage(ctx, log, st, f, key)
 	}
 	if !a.Stats.Quiet(fmt.Sprint("unimpl", f.Cmd)) {
 		log.Warn("matching2 unimplemented room command", "elements", elementIDs(f.Elements()), "bytes", len(f.Raw), "hex", hex.EncodeToString(f.Redacted()))
 	}
 	return nil
+}
+
+// roomMessage answers SendRoomChatMessage (0x3208) / SendRoomMessage (0x320a) and forwards the payload to the room's other
+// members as the matching message event (0x3209 chat / 0x320b message, §24). The destination (0x44, 16 bytes) is passed
+// through verbatim and echoed in the reply; delivery is to every other member with a live connection and a room key —
+// the receiving firmware filters a unicast destination itself [I]. The chat reply also carries 0x75 (u8 = 1) [I].
+func (a *Agent) roomMessage(ctx context.Context, log *slog.Logger, st *conn, f *wire.Frame, key []byte) []byte {
+	chat := f.Cmd == wire.CmdSendRoomChatMessage
+	payloadID, eventCode := uint16(0x1b), uint16(wire.EventRoomBinary)
+	if chat {
+		payloadID, eventCode = 0x1a, wire.EventRoomMessage
+	}
+	el := f.Elements()
+	payload := el[payloadID]
+	if len(payload) == 0 || len(payload) > 1024 || a.Rooms == nil || st.room == "" {
+		return nil
+	}
+	dest := el[0x44]
+	members, err := a.Rooms.Members(ctx, st.room, st.sess.Account)
+	if err != nil {
+		log.Warn("matching2 room message members", "err", err)
+		return nil
+	}
+	var senderNo uint16
+	for _, m := range members {
+		if m.Account == st.sess.Account {
+			senderNo = uint16(m.No)
+		}
+	}
+	delivered := 0
+	for _, m := range members {
+		if m.Account == st.sess.Account {
+			continue
+		}
+		mkey, err := a.Store.GetRoomKey(ctx, st.room, m.Account)
+		if err != nil || mkey == nil {
+			continue
+		}
+		elems := [][]byte{wire.TLV(0x16, 4, binary.BigEndian.AppendUint16(nil, senderNo))}
+		if len(dest) == 16 {
+			elems = append(elems, wire.TLV(0x44, 7, dest))
+		}
+		typ := uint16(2)
+		if chat {
+			typ = 1
+		}
+		elems = append(elems, wire.TLV(payloadID, typ, payload))
+		if info := el[0x64]; len(info) > 0 {
+			elems = append(elems, wire.TLV(0x64, 0, info))
+		}
+		if chat {
+			elems = append(elems, wire.TLV(0x75, 3, []byte{1}))
+		}
+		if a.sendToAccount(m.Account, wire.Event(mkey, eventCode, roomIDOf(st.room), elems...)) {
+			delivered++
+		}
+	}
+	log.Info("matching2 room message", "chat", chat, "bytes", len(payload), "delivered", delivered)
+	reply := [][]byte{}
+	if len(dest) == 16 {
+		reply = append(reply, wire.TLV(0x44, 7, dest))
+	} else {
+		reply = append(reply, wire.TLV(0x44, 7, make([]byte, 16)))
+	}
+	if chat {
+		reply = append(reply, wire.TLV(0x75, 3, []byte{1}))
+	}
+	return wire.Reply(key, f.Cmd, 0, f.ReqID, reply...)
 }
 
 // watch starts, once per plain connection with a login, the push of room events for that console (when RoomEvents is on).

@@ -25,6 +25,10 @@ const (
 	CmdRenew       = 0x1003 // header only; reply carries a fresh 0x5d token
 	CmdWorldList   = 0x1008 // header only; GetWorldInfoList
 	CmdUnknown1209 = 0x1209 // request: element 0x29 u16 = 1 (server id); reply: 0x20 required token, optional 0x3d, 0x1f, 0x02 list of 0x0a (0x84-byte items), 0x12
+	// Room commands (handled in the agent, not named here before): CreateJoinRoom/JoinRoom carry the
+	// member list; SendRoomChatMessage/SendRoomMessage (§24) carry 0x44 destination + 0x1a/0x1b payload.
+	CmdSendRoomChatMessage = 0x3208
+	CmdSendRoomMessage     = 0x320a
 )
 
 // Frame is one request, reply or event.

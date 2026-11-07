@@ -15,8 +15,9 @@ const (
 	EventMemberUpdated  = 0x320d // schema: 0x16, 0x06?, 0x1c?, 0x13?, 0x59?, 0x6e?
 	EventRoomUpdated    = 0x320e
 	EventOwnerChanged   = 0x3212
-	EventRoomMessage    = 0x3209
-	EventSignalingPeers = 0x320b // [I] 0x16, 0x44?, 0x1b, 0x64?: carries an opaque 1..1024-byte blob for a member
+	EventRoomMessage    = 0x3209          // ROOM_MSG_EVENT_ChatMessage (0x2101): 0x16 source member, 0x44?, 0x1a chat, 0x64?, 0x75
+	EventRoomBinary     = 0x320b          // ROOM_MSG_EVENT_Message (0x2102): 0x16 source member, 0x44?, 0x1b message, 0x64? (§24; not signaling)
+	EventSignalingPeers = EventRoomBinary // old name, kept for compat: 0x320b is the room Message event
 )
 
 // Event builds a kind-4 packet. Header as the firmware copies it (vsh 0x2b9e2c, 0x1c bytes after the first four): code at +4, the 64-bit

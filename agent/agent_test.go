@@ -271,3 +271,98 @@ func TestHandshake(t *testing.T) {
 		t.Fatal("sessions survive erasure")
 	}
 }
+
+// Two logged-in clients in one room: a room message from the second reaches the first as a kind-4 event
+// MAC'd with the first member's room key (§24), and the sender gets the destination echoed.
+func TestRoomMessageForwarded(t *testing.T) {
+	url := os.Getenv("NP_MATCHING_TEST_DATABASE_URL")
+	if url == "" {
+		t.Skip("NP_MATCHING_TEST_DATABASE_URL not set")
+	}
+	ctx := context.Background()
+	st, err := agent.OpenStore(ctx, url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	st.DB.Exec(ctx, `TRUNCATE m2_sessions`)
+	st.DB.Exec(ctx, `TRUNCATE m2_room_keys`)
+	_, priv, _ := ed25519.GenerateKey(rand.Reader)
+	signer, _ := ticket.New(priv, nil)
+	pass := make([]byte, 128)
+	rand.Read(pass)
+	const hostAcct, joinAcct = "11111111-1111-1111-1111-111111111111", "33333333-3333-3333-3333-333333333333"
+	fr := &fakeRooms{events: make(chan agent.RoomEvent, 1)}
+	a := &agent.Agent{Titles: map[string]agent.Title{"NPWR04270_00": {Key: "terraria", Pass: pass}}, Store: st, Tickets: signer, Core: fakeCore{}, Rooms: fr}
+	pair := func(h func(net.Conn)) net.Conn {
+		ln, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer ln.Close()
+		go func() {
+			if s, err := ln.Accept(); err == nil {
+				h(s)
+			}
+		}()
+		c, err := net.Dial("tcp", ln.Addr().String())
+		if err != nil {
+			t.Fatal(err)
+		}
+		return c
+	}
+	login := func(acctID, online string) *client.Client {
+		c := &client.Client{Comm: "NPWR04270_00", Pass: pass, Plain: pair(a.ServePlain), TLS: pair(a.ServeTLS)}
+		if _, err := c.Ping(); err != nil {
+			t.Fatal(err)
+		}
+		tk, err := signer.Issue(ticket.Identity{AccountID: acctID, LinkID: "l", OnlineID: online, Country: "pt", Service: "IV0001-NPXS01001_00"}, time.Hour)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := c.Login(tk, online, online+" User"); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := c.Call(wire.CmdWorldList); err != nil {
+			t.Fatal(err)
+		}
+		return c
+	}
+	host := login(hostAcct, "PS3Test")
+	if _, err := host.Call(0x3200, wire.TLV(0x3f, 4, []byte{0, 4})); err != nil {
+		t.Fatal(err)
+	}
+	var hostKey []byte
+	st.DB.QueryRow(ctx, `SELECT key FROM m2_room_keys WHERE account=$1`, hostAcct).Scan(&hostKey)
+	if len(hostKey) != 16 {
+		t.Fatalf("host room key %d bytes", len(hostKey))
+	}
+	joiner := login(joinAcct, "SwitchTest")
+	if _, err := joiner.Call(0x3201, wire.TLV(0x3e, 4, []byte{0xbb, 0xbb})); err != nil {
+		t.Fatal(err)
+	}
+	dest := make([]byte, 16)
+	dest[0] = 1 // broadcast
+	rf, err := joiner.Call(wire.CmdSendRoomMessage, wire.TLV(0x44, 7, dest), wire.TLV(0x1b, 2, []byte("hello-relay")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := rf.Elements()[0x44]; string(got) != string(dest) {
+		t.Fatalf("reply destination %x", got)
+	}
+	ef, err := client.ReadFrame(host.Plain)
+	if err != nil || ef.Kind != wire.KindEvent || ef.Cmd != wire.EventRoomBinary || !ef.Verify(hostKey) {
+		t.Fatalf("message event: %v %+v", err, ef)
+	}
+	if el := ef.Elements(); string(el[0x1b]) != "hello-relay" || string(el[0x16]) != string([]byte{0, 2}) || string(el[0x44]) != string(dest) {
+		t.Fatalf("message event elements %x", el)
+	}
+	cf, err := joiner.Call(wire.CmdSendRoomChatMessage, wire.TLV(0x44, 7, dest), wire.TLV(0x1a, 1, []byte("hi all")))
+	if err != nil || len(cf.Elements()[0x75]) != 1 {
+		t.Fatalf("chat reply: %v %x", err, cf.Elements())
+	}
+	ef, err = client.ReadFrame(host.Plain)
+	if err != nil || ef.Cmd != wire.EventRoomMessage || !ef.Verify(hostKey) || string(ef.Elements()[0x1a]) != "hi all" {
+		t.Fatalf("chat event: %v %+v", err, ef)
+	}
+}

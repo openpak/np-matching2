@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.2.13
+
+Room messages: SendRoomChatMessage (0x3208) and SendRoomMessage (0x320a) are answered and forwarded to the room's other members as the matching message events (0x3209 chat / 0x320b message, room-key MAC'd), with the 16-byte destination passed through and echoed (protocol doc §24). The test client gains a `msg` mode that sends one broadcast room message and holds the join for a minute.
+
 ## v0.2.12
 
 The headless test client can publish a member endpoint on JoinRoom like a real console (`NP_TESTCLIENT_PUBLIC_IP`: element 0x6e = public IPv4, 0x13 = NAT type) and can hold the join open (`testclient <id> hold`, 180 s). For the PS3 relay's signaling capture: a host that is told about the new member has an address to signal to (prds#145).
