@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.2.19
+
+Hosting first: the 0x3200 create reply and 0x3201 join reply are byte-identical to v0.2.16 again (prds#145). v0.2.18 still froze Terraria on a real PS3 right after the room was created (2026-11-10 21:11Z); the host's own member id 16 (v0.2.17's `no << 4`) was the last create-reply difference from v0.2.16. Member ids on the wire are the plain member number again everywhere (member element, 0x3201 own id, room message sender, MemberJoined +14). The kind-4 event header keeps the room handle 1 at +12, so MemberJoined events should now reach the room; the slot-id part of the v0.2.17 event fix is not active. `wire.TestCreateJoinReplyGolden` pins both replies to the v0.2.16 bytes.
+
 ## v0.2.18
 
 Room data carries the room id at head[16..24] again. v0.2.17 zeroed those bytes and a real PS3 froze in Terraria right after the 0x3200 create reply (2026-11-10 21:05Z); with the id there the same console hosted on every earlier version. The event header and member id changes of v0.2.17 stay.
