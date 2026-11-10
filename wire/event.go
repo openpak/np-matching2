@@ -20,14 +20,17 @@ const (
 	EventSignalingPeers = EventRoomBinary // old name, kept for compat: 0x320b is the room Message event
 )
 
-// Event builds a kind-4 packet. Header as the firmware copies it (vsh 0x2b9e2c, 0x1c bytes after the first four): code at +4, the 64-bit
-// room id at +8 (the dispatcher looks the room up by two words from there, vsh 0x28c898; inferred from that lookup), MAC at +16 keyed with
-// the receiving member's room key.
-func Event(key []byte, code uint16, roomID uint64, elems ...[]byte) []byte {
+// Event builds a kind-4 packet. Header as the firmware reads it (vsh 0x2b4db4 -> 0x2b8940 copies 0x1c bytes after the base four, then
+// calls the handler with them, asm 0x2b52f8): code at +4, u32 at +8 (its top nibble picks one listener, 0 = all, vsh 0x2877ec), the room
+// handle at +12 (u16, compared with room+10 = head[0..2] of the room data the console got in its 0x3200/0x3201 reply, vsh 0x29bae0), the
+// subject member id at +14 (the new member of a MemberJoined, vsh 0x2c896c; the sender of a room message, vsh 0x2c8cbc), MAC at +16 keyed
+// with the receiving member's room key (room+0x3f8, vsh 0x2b4bd8). member is the wire id (MemberID).
+func Event(key []byte, code, member uint16, elems ...[]byte) []byte {
 	b := make([]byte, HeaderLen)
 	b[0], b[1] = 0x11, KindEvent
 	binary.BigEndian.PutUint16(b[4:], code)
-	binary.BigEndian.PutUint64(b[8:], roomID)
+	binary.BigEndian.PutUint16(b[12:], ServerID)
+	binary.BigEndian.PutUint16(b[14:], member)
 	for _, e := range elems {
 		b = append(b, e...)
 	}
@@ -35,6 +38,11 @@ func Event(key []byte, code uint16, roomID uint64, elems ...[]byte) []byte {
 	copy(b[16:32], Mac(key, b))
 	return b
 }
+
+// MemberID is the wire member id of room member number no (1-based): the firmware keeps members in a slot table indexed by id>>4, slot 0
+// aliasing the room's "me" pointer, and refuses a slot already taken with 0x800223ff (vsh 0x29ef9c stores id>>4 at member+10, 0x29ec18
+// inserts; 0x29e7b0 looks up). The low nibble goes into the room's 2-bit slot map (vsh 0x290128), so it stays 0.
+func MemberID(no uint32) uint16 { return uint16(no << 4) }
 
 // RoomKeyToken is the token a 0x3200/0x3201 reply carries in 0x24 and 0x21: the firmware stores the room key as the AES-128-ECB
 // decryption of that token with the first 16 bytes of the login session key (vsh 0x2903a8, key from grp+0x90), keeping the token's

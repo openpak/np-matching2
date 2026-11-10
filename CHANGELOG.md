@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.2.17
+
+Room events and member ids as the firmware reads them (prds#145, vsh 4.93 decode in protocol doc §33). The kind-4 header carried the 64-bit room id at +8; the firmware instead finds the room by the u16 at +12 (compared with head[0..2] of the room data it got in its 0x3200/0x3201 reply, the server id 1) and takes the subject member id from the u16 at +14, so every MemberJoined and room message event was dropped with 0x80022335 (room not found) before reaching the game. Events now carry the room handle 1 at +12 and the member id at +14. Member ids are slot ids (`slot << 4`): the firmware indexes members by id>>4 and slot 0 aliases the room's own-member pointer, so ids 1, 2, 3 all fell in slot 0 (0x800223ff, slot taken). The room data head no longer writes the room id into the 16-byte slot map (2 bits per slot); the map is zero.
+
 ## v0.2.16
 
 Member NpIds follow each console's RT realm (prds#175, prds#145). Every NpId the agent emits (CreateJoinRoom self, JoinRoom member list, MemberJoined event, SearchRoom owner, GetUserInfoList) used the fixed options `ptnpps3`. The firmware derives a console's NpId from its RT JID `<id>@<cc>.<cc>.np.playstation.net/ps3` (options `<cc><cc>ps3`, §30), so Terraria activated signaling toward an NpId no RT connection matched and the PS3 killed the signaled one after 60 s (§32). The options are now `<cc><cc>ps3` with cc = the account's core country, normalized as np-account does for the ticket (lower case, `us` by default). The test client and `ticket` mode issue tickets with that country, no longer a fixed `pt`.

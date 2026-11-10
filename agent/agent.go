@@ -532,7 +532,7 @@ func (a *Agent) createRoom(ctx context.Context, log *slog.Logger, t Title, st *c
 		return nil
 	}
 	log.Info("matching2 room created", "session", room.ID, "max_slot", maxSlot, "bytes", len(f.Raw), "endpoint", len(addr) == 4)
-	rd := wire.RoomData{ServerID: 1, WorldID: 1, MaxSlot: uint16(maxSlot)}
+	rd := wire.RoomData{WorldID: 1, MaxSlot: uint16(maxSlot)}
 	me := wire.MemberInfo{No: room.MemberNo, Name: st.sess.OnlineID, Country: a.country(ctx, st.sess.Account), Addr: addr, NAT: nat}
 	els := wire.CreateJoinRoomReply(room.RoomID, rd, me, tok, tok)
 	return wire.Reply(st.sess.Key, f.Cmd, 0, f.ReqID, els...)
@@ -623,8 +623,8 @@ func (a *Agent) joinRoom(ctx context.Context, log *slog.Logger, t Title, st *con
 		}
 		members = append(members, mi)
 	}
-	rd := wire.RoomData{ServerID: 1, WorldID: 1, MaxSlot: uint16(j.Max)}
-	els := wire.JoinRoomReply(uint16(j.MemberNo), j.RoomID, rd, members, tok, tok)
+	rd := wire.RoomData{WorldID: 1, MaxSlot: uint16(j.Max)}
+	els := wire.JoinRoomReply(j.MemberNo, j.RoomID, rd, members, tok, tok)
 	return wire.Reply(st.sess.Key, f.Cmd, 0, f.ReqID, els...)
 }
 
@@ -749,7 +749,7 @@ func (a *Agent) roomMessage(ctx context.Context, log *slog.Logger, st *conn, f *
 	var senderNo uint16
 	for _, m := range members {
 		if m.Account == st.sess.Account {
-			senderNo = uint16(m.No)
+			senderNo = wire.MemberID(m.No)
 		}
 	}
 	delivered := 0
@@ -776,7 +776,7 @@ func (a *Agent) roomMessage(ctx context.Context, log *slog.Logger, st *conn, f *
 		if chat {
 			elems = append(elems, wire.TLV(0x75, 3, []byte{1}))
 		}
-		if a.sendToAccount(m.Account, wire.Event(mkey, eventCode, roomIDOf(st.room), elems...)) {
+		if a.sendToAccount(m.Account, wire.Event(mkey, eventCode, senderNo, elems...)) {
 			delivered++
 		}
 	}
@@ -863,7 +863,7 @@ func (a *Agent) pushEvent(ctx context.Context, st *conn, account, online string,
 			continue
 		}
 		mi := wire.MemberInfo{No: m.No, Name: a.onlineID(ctx, m.Account), Country: a.country(ctx, m.Account), Addr: m.Addr, NAT: m.NAT}
-		pkt := wire.Event(key, wire.EventMemberJoined, roomIDOf(ev.Session), wire.MemberOf(mi))
+		pkt := wire.Event(key, wire.EventMemberJoined, wire.MemberID(m.No), wire.MemberOf(mi))
 		if err := st.write(pkt); err != nil {
 			log.Warn("matching2 event write", "err", err)
 			return
