@@ -51,3 +51,12 @@ func TestServerList(t *testing.T) {
 		t.Fatalf("list %x", el[0x02])
 	}
 }
+
+func TestNpIDRealm(t *testing.T) {
+	if got := string(NpID("PS3Test", "PT")[16:]); got != "ptptps3\x00" {
+		t.Fatalf("pt: %q", got)
+	}
+	if got := string(NpID("SwitchTest", "")[16:]); got != "ususps3\x00" {
+		t.Fatalf("default: %q", got)
+	}
+}

@@ -123,7 +123,7 @@ func TestHandshake(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := c.Login(tk, "PS3Test", "PS3 Test User"); err != nil || len(c.Key) != 20 {
+	if _, err := c.Login(tk, "PS3Test", "pt", "PS3 Test User"); err != nil || len(c.Key) != 20 {
 		t.Fatalf("login: %v", err)
 	}
 
@@ -155,7 +155,7 @@ func TestHandshake(t *testing.T) {
 	// connection the agent already pinned to the first login (real PS3, 2026-11-07: the 0x1209 was
 	// dropped as "no session for request"). The agent must re-resolve, not verify against the stale key.
 	firstKey := append([]byte(nil), c.Key...)
-	if _, err := c.Login(tk, "PS3Test", "PS3 Test User"); err != nil || len(c.Key) != 20 || bytes.Equal(c.Key, firstKey) {
+	if _, err := c.Login(tk, "PS3Test", "pt", "PS3 Test User"); err != nil || len(c.Key) != 20 || bytes.Equal(c.Key, firstKey) {
 		t.Fatalf("second login: %v", err)
 	}
 	pf, err := c.Call(wire.CmdUnknown1209, wire.TLV(0x29, 4, []byte{0, 1}))
@@ -247,7 +247,7 @@ func TestHandshake(t *testing.T) {
 		t.Fatal("unknown key answered")
 	}
 	wrong := &client.Client{Comm: "NPWR04270_00", Pass: append([]byte{1}, pass[1:]...), TLS: pair(a.ServeTLS)}
-	if _, err := wrong.Login(tk, "PS3Test", "x"); err == nil {
+	if _, err := wrong.Login(tk, "PS3Test", "pt", "x"); err == nil {
 		t.Fatal("login with the wrong passphrase")
 	}
 
@@ -320,7 +320,7 @@ func TestRoomMessageForwarded(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := c.Login(tk, online, online+" User"); err != nil {
+		if _, err := c.Login(tk, online, "pt", online+" User"); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := c.Call(wire.CmdWorldList); err != nil {

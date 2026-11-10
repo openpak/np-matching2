@@ -17,6 +17,16 @@ import (
 	"time"
 )
 
+// accountCountry is the ticket country np-account would issue for the account, so a headless participant signs in to the
+// same realm (NpId options, RT JID <id>@<cc>.<cc>.np.playstation.net) that np-matching2 publishes for it.
+func accountCountry(ctx context.Context, core *coreclient.Client, account string) (string, error) {
+	acc, err := core.GetAccount(ctx, account)
+	if err != nil {
+		return "", fmt.Errorf("account %s: %w", account, err)
+	}
+	return wire.Country(acc.Country), nil
+}
+
 // issueTicket prints (to stdout, nothing else) a fresh NP ticket for an online id, resolved through the
 // account core and signed with the agent's key. Used to sign other headless participants (the Terraria
 // relay's RT signaling probe) into NP services as that account.
@@ -38,7 +48,11 @@ func issueTicket(args []string) error {
 	if err != nil {
 		return err
 	}
-	tk, err := signer.Issue(ticket.Identity{AccountID: link.AccountID, LinkID: link.LinkID, OnlineID: link.OnlineID, Country: "pt", Service: "IV0001-NPXS01001_00"}, time.Hour)
+	country, err := accountCountry(ctx, core, link.AccountID)
+	if err != nil {
+		return err
+	}
+	tk, err := signer.Issue(ticket.Identity{AccountID: link.AccountID, LinkID: link.LinkID, OnlineID: link.OnlineID, Country: country, Service: "IV0001-NPXS01001_00"}, time.Hour)
 	if err != nil {
 		return err
 	}
@@ -67,7 +81,11 @@ func testclient(args []string) error {
 	if err != nil {
 		return err
 	}
-	tk, err := signer.Issue(ticket.Identity{AccountID: link.AccountID, LinkID: link.LinkID, OnlineID: link.OnlineID, Country: "pt", Service: "IV0001-NPXS01001_00"}, time.Hour)
+	country, err := accountCountry(ctx, core, link.AccountID)
+	if err != nil {
+		return err
+	}
+	tk, err := signer.Issue(ticket.Identity{AccountID: link.AccountID, LinkID: link.LinkID, OnlineID: link.OnlineID, Country: country, Service: "IV0001-NPXS01001_00"}, time.Hour)
 	if err != nil {
 		return err
 	}
@@ -88,7 +106,7 @@ func testclient(args []string) error {
 	if _, err := c.Ping(); err != nil {
 		return fmt.Errorf("ping: %w", err)
 	}
-	if _, err := c.Login(tk, link.OnlineID, link.OnlineID); err != nil {
+	if _, err := c.Login(tk, link.OnlineID, country, link.OnlineID); err != nil {
 		return fmt.Errorf("login: %w", err)
 	}
 	fmt.Println("logged in as", link.OnlineID)

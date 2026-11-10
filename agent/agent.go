@@ -16,6 +16,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"openpak/np-common/coreclient"
 	"openpak/np-common/ticket"
 	"openpak/np-matching2/wire"
 )
@@ -182,6 +183,30 @@ func (a *Agent) onlineID(ctx context.Context, account string) string {
 	return ""
 }
 
+// country is the account country a member's NpId realm comes from: the core account's, which np-account also writes into the
+// console's ticket (so it is the realm the console signs in to RT with). Unknown accounts get wire.Country's default.
+func (a *Agent) country(ctx context.Context, account string) string {
+	if a.Account == nil || account == "" {
+		return ""
+	}
+	if acc, err := a.Account.GetAccount(ctx, account); err == nil {
+		return acc.Country
+	}
+	return ""
+}
+
+// countryOf resolves an online id to its account's country, when the account core can look links up by online id.
+func (a *Agent) countryOf(ctx context.Context, onlineID string) string {
+	if r, ok := a.Account.(interface {
+		GetLinkByOnlineID(context.Context, string) (*coreclient.Link, error)
+	}); ok {
+		if l, err := r.GetLinkByOnlineID(ctx, onlineID); err == nil {
+			return a.country(ctx, l.AccountID)
+		}
+	}
+	return ""
+}
+
 func (a *Agent) log() *slog.Logger {
 	if a.Log != nil {
 		return a.Log
@@ -322,12 +347,12 @@ func (a *Agent) handle0(ctx context.Context, st *conn, f *wire.Frame) []byte {
 	if f.Cmd == 0x1007 && f.Verify(t.Pass[:16]) {
 		// GetUserInfoList: MAC'd with the passphrase like 0x1001. Elements: 0x0e once per user (online id), 0x05 once per requested
 		// info attribute id (u16). The reply lists each user with only its NpId: nobody hosts a room yet.
-		var ids []string
+		var users []wire.MemberInfo
 		for _, u := range f.All(0x0e) {
-			ids = append(ids, string(u))
+			users = append(users, wire.MemberInfo{Name: string(u), Country: a.countryOf(ctx, string(u))})
 		}
-		log.Debug("matching2 request", "users", len(ids))
-		return wire.Reply(t.Pass[:16], f.Cmd, 0, f.ReqID, wire.UserInfoList(ids))
+		log.Debug("matching2 request", "users", len(users))
+		return wire.Reply(t.Pass[:16], f.Cmd, 0, f.ReqID, wire.UserInfoList(users))
 	}
 	// Room requests other than create/join (0x3202 leave, ...) are MAC'd with the member's room key, not the session key.
 	st.roomKey = nil
@@ -508,7 +533,7 @@ func (a *Agent) createRoom(ctx context.Context, log *slog.Logger, t Title, st *c
 	}
 	log.Info("matching2 room created", "session", room.ID, "max_slot", maxSlot, "bytes", len(f.Raw), "endpoint", len(addr) == 4)
 	rd := wire.RoomData{ServerID: 1, WorldID: 1, MaxSlot: uint16(maxSlot)}
-	me := wire.MemberInfo{No: room.MemberNo, Name: st.sess.OnlineID, Addr: addr, NAT: nat}
+	me := wire.MemberInfo{No: room.MemberNo, Name: st.sess.OnlineID, Country: a.country(ctx, st.sess.Account), Addr: addr, NAT: nat}
 	els := wire.CreateJoinRoomReply(room.RoomID, rd, me, tok, tok)
 	return wire.Reply(st.sess.Key, f.Cmd, 0, f.ReqID, els...)
 }
@@ -533,7 +558,7 @@ func (a *Agent) searchRooms(ctx context.Context, log *slog.Logger, t Title, st *
 		if r.Network != "np" {
 			foreign++
 		}
-		items = append(items, wire.SearchItem{RoomID: r.RoomID, MaxSlot: uint16(r.Max), Owner: a.onlineID(ctx, r.Owner)})
+		items = append(items, wire.SearchItem{RoomID: r.RoomID, MaxSlot: uint16(r.Max), Owner: a.onlineID(ctx, r.Owner), OwnerCountry: a.country(ctx, r.Owner)})
 	}
 	log.Info("matching2 search", "rooms", len(items), "cross_network", foreign, "bytes", len(f.Raw))
 	return wire.Reply(st.sess.Key, f.Cmd, 0, f.ReqID, wire.SearchRoomReply(items))
@@ -590,7 +615,7 @@ func (a *Agent) joinRoom(ctx context.Context, log *slog.Logger, t Title, st *con
 	log.Info("matching2 room joined", "session", j.ID, "by", how, "member", j.MemberNo, "endpoint", len(addr) == 4)
 	members := make([]wire.MemberInfo, 0, len(j.Members))
 	for _, m := range j.Members {
-		mi := wire.MemberInfo{No: m.No, Name: st.sess.OnlineID, Addr: m.Addr, NAT: m.NAT}
+		mi := wire.MemberInfo{No: m.No, Name: st.sess.OnlineID, Country: a.country(ctx, m.Account), Addr: m.Addr, NAT: m.NAT}
 		if m.Account != st.sess.Account {
 			mi.Name = a.onlineID(ctx, m.Account)
 		} else if len(addr) == 4 {
@@ -837,7 +862,7 @@ func (a *Agent) pushEvent(ctx context.Context, st *conn, account, online string,
 		if m.Account != ev.Subject {
 			continue
 		}
-		mi := wire.MemberInfo{No: m.No, Name: a.onlineID(ctx, m.Account), Addr: m.Addr, NAT: m.NAT}
+		mi := wire.MemberInfo{No: m.No, Name: a.onlineID(ctx, m.Account), Country: a.country(ctx, m.Account), Addr: m.Addr, NAT: m.NAT}
 		pkt := wire.Event(key, wire.EventMemberJoined, roomIDOf(ev.Session), wire.MemberOf(mi))
 		if err := st.write(pkt); err != nil {
 			log.Warn("matching2 event write", "err", err)

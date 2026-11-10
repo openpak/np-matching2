@@ -73,10 +73,9 @@ func (c *Client) Ping() (*wire.Frame, error) {
 }
 
 // Login is 0x1002 on the TLS connection (no MAC); it stores the session key.
-func (c *Client) Login(ticket []byte, onlineID, name string) (*wire.Frame, error) {
-	npid := make([]byte, 24)
-	copy(npid, onlineID)
-	copy(npid[16:], "ptnpps3")
+// country is the ticket's country: the NpId options follow it, as a console's do.
+func (c *Client) Login(ticket []byte, onlineID, country, name string) (*wire.Frame, error) {
+	npid := wire.NpID(onlineID, country)
 	nm := make([]byte, 48)
 	copy(nm, name)
 	req := wire.Request(nil, wire.CmdLogin, c.id(),

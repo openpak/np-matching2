@@ -14,15 +14,26 @@ import (
 
 // accounts is a fake account core: np links by account, display names by account.
 type accounts struct {
-	links map[string]string
-	names map[string]string
+	links     map[string]string
+	names     map[string]string
+	countries map[string]string
 }
 
 func (f accounts) GetAccount(_ context.Context, id string) (*coreclient.Account, error) {
-	if n, ok := f.names[id]; ok {
-		return &coreclient.Account{ID: id, DisplayName: n}, nil
+	n, ok := f.names[id]
+	if c, has := f.countries[id]; ok || has {
+		return &coreclient.Account{ID: id, DisplayName: n, Country: c}, nil
 	}
 	return nil, errors.New("no account")
+}
+
+func (f accounts) GetLinkByOnlineID(_ context.Context, online string) (*coreclient.Link, error) {
+	for id, o := range f.links {
+		if o == online {
+			return &coreclient.Link{AccountID: id, OnlineID: o}, nil
+		}
+	}
+	return nil, coreclient.ErrNoLink
 }
 
 func (f accounts) GetLinkByAccount(_ context.Context, id string) (*coreclient.Link, error) {
@@ -76,7 +87,8 @@ func testAgent(cross ...string) (*Agent, *rooms, *conn) {
 		{ID: "22222222-0000-0000-0000-000000000000", RoomID: 1<<48 | 0x222222220000, Owner: wiiuHost, Network: "wiiu", Max: 8, Members: 1},
 	}}
 	a := &Agent{Rooms: r, CrossNetworks: cross, Log: slog.New(slog.NewTextHandler(io.Discard, nil)),
-		Account: accounts{links: map[string]string{psHost: "PS3Test"}, names: map[string]string{wiiuHost: "A Wii U player with a long name"}}}
+		Account: accounts{links: map[string]string{psHost: "PS3Test", "acc-me": "Joiner"}, names: map[string]string{wiiuHost: "A Wii U player with a long name"},
+			countries: map[string]string{psHost: "PT", "acc-me": "us"}}}
 	st := &conn{stop: make(chan struct{}), sess: &Session{Account: "acc-me", OnlineID: "Joiner", Key: make([]byte, 20)}}
 	return a, r, st
 }
@@ -142,5 +154,31 @@ func TestCrossNetworkListsButRefusesJoin(t *testing.T) {
 	out = a.joinRoom(context.Background(), a.log(), Title{}, st, frame(0x3201, ps))
 	if out == nil || r.joined != 1 || !strings.Contains(string(out), "PS3Test") || !strings.Contains(string(out), "Joiner") {
 		t.Fatal("np join with names resolved from the core")
+	}
+}
+
+// Two consoles in different realms: each member's NpId carries the realm its own console signs in to RT with
+// (<cc><cc>ps3 from its account country), never one fixed realm (#145: Terraria activates signaling toward this NpId).
+func TestMemberNpIdsFollowEachConsolesRealm(t *testing.T) {
+	a, _, st := testAgent()
+	host, joiner := string(wire.NpID("PS3Test", "pt")), string(wire.NpID("Joiner", "us"))
+	if !strings.HasSuffix(host, "ptptps3\x00") || !strings.HasSuffix(joiner, "ususps3\x00") {
+		t.Fatalf("npid options %q %q", host, joiner)
+	}
+	ps := wire.TLV(0x3a, 2, []byte{0, 1, 0x11, 0x11, 0x11, 0x11, 0, 0})
+	out := string(a.joinRoom(context.Background(), a.log(), Title{}, st, frame(0x3201, ps)))
+	if !strings.Contains(out, host) || !strings.Contains(out, joiner) || strings.Contains(out, "ptnpps3") {
+		t.Fatal("join reply member NpIds do not follow each console's realm")
+	}
+	if out := string(a.searchRooms(context.Background(), a.log(), Title{}, st, frame(0x1200))); !strings.Contains(out, host) {
+		t.Fatal("search owner NpId")
+	}
+	pass := make([]byte, 128)
+	a.Titles = map[string]Title{"NPWR04270_00": {Pass: pass}}
+	f, _, _ := wire.Parse(wire.Request(pass[:16], 0x1007, [4]byte{}, wire.TLV(0x10, 1, []byte("NPWR04270_00")),
+		wire.TLV(0x0e, 1, []byte("PS3Test")), wire.TLV(0x0e, 1, []byte("Joiner")), wire.TLV(0x0e, 1, []byte("Nobody"))))
+	users := string(a.handle0(context.Background(), &conn{stop: make(chan struct{})}, f))
+	if !strings.Contains(users, host) || !strings.Contains(users, joiner) || !strings.Contains(users, string(wire.NpID("Nobody", ""))) {
+		t.Fatal("user info NpIds do not follow each console's realm")
 	}
 }

@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.2.16
+
+Member NpIds follow each console's RT realm (prds#175, prds#145). Every NpId the agent emits (CreateJoinRoom self, JoinRoom member list, MemberJoined event, SearchRoom owner, GetUserInfoList) used the fixed options `ptnpps3`. The firmware derives a console's NpId from its RT JID `<id>@<cc>.<cc>.np.playstation.net/ps3` (options `<cc><cc>ps3`, §30), so Terraria activated signaling toward an NpId no RT connection matched and the PS3 killed the signaled one after 60 s (§32). The options are now `<cc><cc>ps3` with cc = the account's core country, normalized as np-account does for the ticket (lower case, `us` by default). The test client and `ticket` mode issue tickets with that country, no longer a fixed `pt`.
+
 ## v0.2.14
 
 New `np-matching2 ticket <online id>` mode: prints a fresh NP ticket for the account (resolved through the account core, signed with the agent's key) and nothing else. It signs headless NP participants in as an account — first user is the Terraria relay's RT signaling probe (`terraria signalprobe`).

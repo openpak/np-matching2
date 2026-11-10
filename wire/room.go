@@ -67,7 +67,7 @@ func MemberOf(m MemberInfo) []byte {
 	if len(addr) > 8 {
 		addr = addr[:8]
 	}
-	b = append(b, TLV(0x0b, 0, NpID(m.Name))...)
+	b = append(b, TLV(0x0b, 0, NpID(m.Name, m.Country))...)
 	b = append(b, TLV(0x0c, 1, nm)...)
 	b = append(b, TLV(0x0d, 1, nil)...)
 	b = append(b, TLV(0x59, 0, binAttr(0, false, nil))...)
@@ -85,9 +85,10 @@ func CreateJoinRoomReply(roomID uint64, rd RoomData, me MemberInfo, tok24, tok21
 // SearchItem is one 0x45 item of a SearchRoom reply (RoomDataExternal). Wire layout from vsh 0x2bd548: three u16 (the room id's low 48 bits),
 // u32 (flag attr, inferred), u16 (max slot, inferred), the owner's 24-byte NpId, then TLVs; 0x41 (32 bytes) is required.
 type SearchItem struct {
-	RoomID  uint64
-	MaxSlot uint16
-	Owner   string
+	RoomID       uint64
+	MaxSlot      uint16
+	Owner        string
+	OwnerCountry string
 }
 
 func (r SearchItem) element() []byte {
@@ -97,7 +98,7 @@ func (r SearchItem) element() []byte {
 	b = binary.BigEndian.AppendUint16(b, uint16(r.RoomID))
 	b = binary.BigEndian.AppendUint32(b, 0)
 	b = binary.BigEndian.AppendUint16(b, r.MaxSlot)
-	b = append(b, NpID(r.Owner)...)
+	b = append(b, NpID(r.Owner, r.OwnerCountry)...)
 	b = append(b, TLV(0x41, 7, make([]byte, 32))...)
 	return TLV(0x45, 0, b)
 }
@@ -123,12 +124,13 @@ func JoinRoomReply(myMember uint16, roomID uint64, rd RoomData, members []Member
 	return [][]byte{TLV(0x16, 4, binary.BigEndian.AppendUint16(nil, myMember)), TLV(0x24, 2, tok24), TLV(0x3a, 2, id), TLV(0x21, 2, tok21), rd.Element(), TLV(0x02, 0, list)}
 }
 
-// MemberInfo is one room member as the wire shows it: Name is the NpId online id, Nick the display name (default Name), Addr the member's
-// 0x6e bytes (its public IPv4 for a PS3) and NAT its NAT type.
+// MemberInfo is one room member as the wire shows it: Name is the NpId online id, Country the account country its NpId realm
+// comes from, Nick the display name (default Name), Addr the member's 0x6e bytes (its public IPv4 for a PS3) and NAT its NAT type.
 type MemberInfo struct {
-	No   uint32
-	Name string
-	Nick string
-	Addr []byte
-	NAT  byte
+	No      uint32
+	Name    string
+	Country string
+	Nick    string
+	Addr    []byte
+	NAT     byte
 }

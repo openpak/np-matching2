@@ -8,6 +8,7 @@ import (
 	"crypto/sha1"
 	"encoding/binary"
 	"errors"
+	"strings"
 )
 
 const HeaderLen = 32
@@ -198,22 +199,36 @@ func (f *Frame) All(id uint16) [][]byte {
 	return out
 }
 
-// NpID is the 24-byte element 0x0b: the online id (16 bytes, NUL padded) and 8 option bytes.
-func NpID(onlineID string) []byte {
+// Country normalizes an account country the way np-account does when it writes the console's ticket: two lower-case
+// letters, "us" otherwise.
+func Country(c string) string {
+	c = strings.ToLower(c)
+	if len(c) != 2 || c[0] < 'a' || c[0] > 'z' || c[1] < 'a' || c[1] > 'z' {
+		return "us"
+	}
+	return c
+}
+
+// NpID is the 24-byte element 0x0b: the online id (16 bytes, NUL padded) and 8 option bytes. The options are the ones the
+// firmware derives from the console's RT JID (research ps3/matching2-protocol.md §30): realm labels 1 and 2, then the resource
+// "ps3". A PS3 signs in to RT as <id>@<cc>.<cc>.np.playstation.net with cc its ticket country (seen: us.us, pt.pt), so the
+// options are <cc><cc>ps3. A game activates NP signaling toward exactly this NpId; any other realm is a different peer.
+func NpID(onlineID, country string) []byte {
 	b := make([]byte, 24)
 	copy(b, onlineID)
-	copy(b[16:], "ptnpps3")
+	c := Country(country)
+	copy(b[16:], c+c+"ps3")
 	return b
 }
 
-// UserInfoList encodes the 0x02 element of a 0x1007 reply: one 0x5e entry per user, each holding only its NpId
-// (no joined rooms yet).
-func UserInfoList(onlineIDs []string) []byte {
-	list := []byte{0x00, 0x5e, byte(len(onlineIDs) >> 8), byte(len(onlineIDs))}
-	for _, id := range onlineIDs {
+// UserInfoList encodes the 0x02 element of a 0x1007 reply: one 0x5e entry per user (Name, Country), each holding only its
+// NpId (no joined rooms yet).
+func UserInfoList(users []MemberInfo) []byte {
+	list := []byte{0x00, 0x5e, byte(len(users) >> 8), byte(len(users))}
+	for _, u := range users {
 		name := make([]byte, 48)
-		copy(name, id)
-		list = append(list, TLV(0x5e, 0, append(TLV(0x0b, 0, NpID(id)), TLV(0x0c, 1, name)...))...)
+		copy(name, u.Name)
+		list = append(list, TLV(0x5e, 0, append(TLV(0x0b, 0, NpID(u.Name, u.Country)), TLV(0x0c, 1, name)...))...)
 	}
 	return TLV(0x02, 0, list)
 }
