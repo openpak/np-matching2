@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.2.18
+
+Room data carries the room id at head[16..24] again. v0.2.17 zeroed those bytes and a real PS3 froze in Terraria right after the 0x3200 create reply (2026-11-10 21:05Z); with the id there the same console hosted on every earlier version. The event header and member id changes of v0.2.17 stay.
+
 ## v0.2.17
 
 Room events and member ids as the firmware reads them (prds#145, vsh 4.93 decode in protocol doc §33). The kind-4 header carried the 64-bit room id at +8; the firmware instead finds the room by the u16 at +12 (compared with head[0..2] of the room data it got in its 0x3200/0x3201 reply, the server id 1) and takes the subject member id from the u16 at +14, so every MemberJoined and room message event was dropped with 0x80022335 (room not found) before reaching the game. Events now carry the room handle 1 at +12 and the member id at +14. Member ids are slot ids (`slot << 4`): the firmware indexes members by id>>4 and slot 0 aliases the room's own-member pointer, so ids 1, 2, 3 all fell in slot 0 (0x800223ff, slot taken). The room data head no longer writes the room id into the 16-byte slot map (2 bits per slot); the map is zero.

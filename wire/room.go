@@ -22,12 +22,13 @@ const ServerID = 1
 // (vsh 0x2c2c0c, stored by 0x29cb6c): u16 -> room+10 (the event room handle), u32 -> room+0x10, u16 -> room+0xc (max slot), 16 bytes ->
 // room+0x1b0 (2 bits per slot, written per member by vsh 0x290128: zero), u64 -> room+0x1c0 (password slot mask).
 type RoomData struct {
-	WorldID  uint32
-	MaxSlot  uint16
-	PwMask   uint64
-	Flags    []byte // element 0x6d, 0..64 bytes
-	Attr1    []byte // element 0x57 data
-	Attr2    []byte // element 0x58 data
+	WorldID uint32
+	RoomID  uint64 // head[16..24]. v0.2.17 zeroed it and a real PS3 froze in Terraria right after 0x3200 (2026-11-10 21:05Z)
+	MaxSlot uint16
+	PwMask  uint64
+	Flags   []byte // element 0x6d, 0..64 bytes
+	Attr1   []byte // element 0x57 data
+	Attr2   []byte // element 0x58 data
 }
 
 func (r RoomData) Element() []byte {
@@ -35,6 +36,7 @@ func (r RoomData) Element() []byte {
 	binary.BigEndian.PutUint16(b[0:], ServerID)
 	binary.BigEndian.PutUint32(b[2:], r.WorldID)
 	binary.BigEndian.PutUint16(b[6:], r.MaxSlot)
+	binary.BigEndian.PutUint64(b[16:], r.RoomID)
 	binary.BigEndian.PutUint64(b[24:], r.PwMask)
 	b = append(b, TLV(0x41, 7, make([]byte, 32))...)
 	b = append(b, TLV(0x57, 0, binAttr(1, true, r.Attr1))...)
@@ -77,6 +79,7 @@ func MemberOf(m MemberInfo) []byte {
 
 // CreateJoinRoomReply holds the five required elements of the 0x3200 reply.
 func CreateJoinRoomReply(roomID uint64, rd RoomData, me MemberInfo, tok24, tok21 []byte) [][]byte {
+	rd.RoomID = roomID
 	id := binary.BigEndian.AppendUint64(nil, roomID)
 	return [][]byte{TLV(0x24, 2, tok24), TLV(0x3a, 2, id), TLV(0x21, 2, tok21), rd.Element(), MemberOf(me)}
 }
@@ -114,6 +117,7 @@ func SearchRoomReply(items []SearchItem) []byte {
 // JoinRoomReply holds the six required elements of a 0x3201 reply (vsh 0x2c602c): 0x16 my member id, tokens, room id, room data, and 0x02 = list of
 // every member (0x4b).
 func JoinRoomReply(myMember uint32, roomID uint64, rd RoomData, members []MemberInfo, tok24, tok21 []byte) [][]byte {
+	rd.RoomID = roomID
 	id := binary.BigEndian.AppendUint64(nil, roomID)
 	list := []byte{0x00, 0x4b, byte(len(members) >> 8), byte(len(members))}
 	for _, m := range members {
