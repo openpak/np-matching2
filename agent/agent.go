@@ -533,7 +533,7 @@ func (a *Agent) createRoom(ctx context.Context, log *slog.Logger, t Title, st *c
 	}
 	log.Info("matching2 room created", "session", room.ID, "max_slot", maxSlot, "bytes", len(f.Raw), "endpoint", len(addr) == 4)
 	rd := wire.RoomData{WorldID: 1, MaxSlot: uint16(maxSlot)}
-	me := wire.MemberInfo{No: room.MemberNo, Name: st.sess.OnlineID, Country: a.country(ctx, st.sess.Account), Addr: addr, NAT: nat}
+	me := wire.MemberInfo{No: room.MemberNo, Name: st.sess.OnlineID, Country: a.country(ctx, st.sess.Account), Addr: addr, NAT: nat, Owner: true}
 	els := wire.CreateJoinRoomReply(room.RoomID, rd, me, tok, tok)
 	return wire.Reply(st.sess.Key, f.Cmd, 0, f.ReqID, els...)
 }
@@ -615,7 +615,7 @@ func (a *Agent) joinRoom(ctx context.Context, log *slog.Logger, t Title, st *con
 	log.Info("matching2 room joined", "session", j.ID, "by", how, "member", j.MemberNo, "endpoint", len(addr) == 4)
 	members := make([]wire.MemberInfo, 0, len(j.Members))
 	for _, m := range j.Members {
-		mi := wire.MemberInfo{No: m.No, Name: st.sess.OnlineID, Country: a.country(ctx, m.Account), Addr: m.Addr, NAT: m.NAT}
+		mi := wire.MemberInfo{No: m.No, Name: st.sess.OnlineID, Country: a.country(ctx, m.Account), Addr: m.Addr, NAT: m.NAT, Owner: m.Owner}
 		if m.Account != st.sess.Account {
 			mi.Name = a.onlineID(ctx, m.Account)
 		} else if len(addr) == 4 {
@@ -623,6 +623,7 @@ func (a *Agent) joinRoom(ctx context.Context, log *slog.Logger, t Title, st *con
 		}
 		members = append(members, mi)
 	}
+	markOwner(members)
 	rd := wire.RoomData{WorldID: 1, MaxSlot: uint16(j.Max)}
 	els := wire.JoinRoomReply(j.MemberNo, j.RoomID, rd, members, tok, tok)
 	return wire.Reply(st.sess.Key, f.Cmd, 0, f.ReqID, els...)
@@ -862,7 +863,7 @@ func (a *Agent) pushEvent(ctx context.Context, st *conn, account, online string,
 		if m.Account != ev.Subject {
 			continue
 		}
-		mi := wire.MemberInfo{No: m.No, Name: a.onlineID(ctx, m.Account), Country: a.country(ctx, m.Account), Addr: m.Addr, NAT: m.NAT}
+		mi := wire.MemberInfo{No: m.No, Name: a.onlineID(ctx, m.Account), Country: a.country(ctx, m.Account), Addr: m.Addr, NAT: m.NAT, Owner: m.Owner}
 		pkt := wire.Event(key, wire.EventMemberJoined, wire.MemberID(m.No), wire.MemberOf(mi))
 		if err := st.write(pkt); err != nil {
 			log.Warn("matching2 event write", "err", err)
@@ -907,4 +908,21 @@ func (a *Agent) keepAlive(st *conn) {
 			}
 		}
 	}()
+}
+
+// markOwner makes sure exactly one member carries the owner flag: Terraria dereferences memberList.owner unchecked after a join too
+// (wire.OwnerFlag). If the core flagged nobody, the lowest member number (the creator unless it left) is taken.
+func markOwner(ms []wire.MemberInfo) {
+	low := -1
+	for i, m := range ms {
+		if m.Owner {
+			return
+		}
+		if low < 0 || m.No < ms[low].No {
+			low = i
+		}
+	}
+	if low >= 0 {
+		ms[low].Owner = true
+	}
 }

@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.2.20
+
+Hosting with a real room on the console (prds#145; research matching2-protocol §34). v0.2.16's own member id 1 sat in slot 0, the firmware's owner pointer, so its create done failed with 0x800223ff (vsh 0x29a378 -> 0x29ec18) and the console never had a room; that is why 0x1202 never followed on v0.2.16. v0.2.17/v0.2.18 (id 0x10) let the create complete, and the firmware handed Terraria a member list with owner = NULL, because no member carried the owner flag (vsh 0x29e864). Terraria dereferences it unchecked (EBOOT 0x126bc0/0x126be4) and froze. Member ids are `no << 4` again, and the room owner's member element carries flag attr 0x80000000 in the create reply, in the join reply's member list (core `is_owner`, else the lowest member number) and in events. The golden test now pins those bytes.
+
 ## v0.2.19
 
 Hosting first: the 0x3200 create reply and 0x3201 join reply are byte-identical to v0.2.16 again (prds#145). v0.2.18 still froze Terraria on a real PS3 right after the room was created (2026-11-10 21:11Z); the host's own member id 16 (v0.2.17's `no << 4`) was the last create-reply difference from v0.2.16. Member ids on the wire are the plain member number again everywhere (member element, 0x3201 own id, room message sender, MemberJoined +14). The kind-4 event header keeps the room handle 1 at +12, so MemberJoined events should now reach the room; the slot-id part of the v0.2.17 event fix is not active. `wire.TestCreateJoinReplyGolden` pins both replies to the v0.2.16 bytes.

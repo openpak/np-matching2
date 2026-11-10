@@ -39,11 +39,12 @@ func Event(key []byte, code, member uint16, elems ...[]byte) []byte {
 	return b
 }
 
-// MemberID is the wire member id of room member number no (1-based). v0.2.17/v0.2.18 sent no<<4 (research §33 read the firmware's
-// member table as slot = id>>4) and a real PS3 froze in Terraria right after its 0x3200 reply both times (2026-11-10 21:05Z, 21:11Z), the
-// host's own member id 16 being the only create-reply difference left from v0.2.16. Back to the plain number until the id scheme is proven;
-// TestCreateJoinReplyGolden pins the v0.2.16 bytes.
-func MemberID(no uint32) uint16 { return uint16(no) }
+// MemberID is the wire member id of room member number no (1-based): slot<<4, slot = no. The firmware indexes its member table by id>>4 at
+// room+0xac + slot*4 (vsh 0x29ef9c stores id>>4 at member+10, 0x29ec18 inserts, 0x29e7b0 looks up), and room+0xac (slot 0) is the room
+// owner pointer, written before the slot check: a create reply whose own member is id 1 (slot 0) fails its done with 0x800223ff (slot
+// taken) at vsh 0x29a378, which is why v0.2.16 hosts never sent 0x1202. Member slots run 1..64 (vsh 0x2984f4). The low nibble goes into
+// the room's 2-bit slot map (vsh 0x290128), so it stays 0.
+func MemberID(no uint32) uint16 { return uint16(no << 4) }
 
 // RoomKeyToken is the token a 0x3200/0x3201 reply carries in 0x24 and 0x21: the firmware stores the room key as the AES-128-ECB
 // decryption of that token with the first 16 bytes of the login session key (vsh 0x2903a8, key from grp+0x90), keeping the token's

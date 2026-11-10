@@ -22,7 +22,7 @@ func TestRoomKeyTokenRoundTrip(t *testing.T) {
 }
 
 // TestEventHeader pins the kind-4 header the firmware dispatches on (vsh 0x2b4db4): room handle at +12 = room data head[0..2], new member
-// id at +14 (plain member number since v0.2.19), and the member element's own id the same.
+// id at +14 in slot form (MemberID), and the member element's own id the same.
 func TestEventHeader(t *testing.T) {
 	key := []byte("room-key-16bytes")
 	pkt := Event(key, EventMemberJoined, MemberID(3), MemberOf(MemberInfo{No: 3, Name: "Joiner", Addr: []byte{1, 2, 3, 4}, NAT: 2}))
@@ -30,7 +30,7 @@ func TestEventHeader(t *testing.T) {
 	if err != nil || len(rest) != 0 || f.Kind != KindEvent || f.Cmd != EventMemberJoined || !f.Verify(key) {
 		t.Fatalf("%v %+v", err, f)
 	}
-	want := []byte{0x11, 0x04, byte(len(pkt) >> 8), byte(len(pkt)), 0x32, 0x0c, 0, 0, 0, 0, 0, 0, 0x00, 0x01, 0x00, 0x03}
+	want := []byte{0x11, 0x04, byte(len(pkt) >> 8), byte(len(pkt)), 0x32, 0x0c, 0, 0, 0, 0, 0, 0, 0x00, 0x01, 0x00, 0x30}
 	if !bytes.Equal(pkt[:16], want) {
 		t.Fatalf("header %x, want %x", pkt[:16], want)
 	}
@@ -39,7 +39,7 @@ func TestEventHeader(t *testing.T) {
 		t.Fatalf("room data head %x does not carry the event room handle / a zero slot map", rd[:32])
 	}
 	m := f.Elements()[0x4b]
-	if binary.BigEndian.Uint16(m) != 3 || m[14] != 2 || !bytes.Contains(m, []byte{0x20, 0x6e, 0, 4, 1, 2, 3, 4}) {
+	if binary.BigEndian.Uint16(m) != 0x30 || m[14] != 2 || !bytes.Contains(m, []byte{0x20, 0x6e, 0, 4, 1, 2, 3, 4}) {
 		t.Fatalf("member %x", m)
 	}
 }

@@ -152,10 +152,11 @@ type RoomMember struct {
 	Account string
 	Addr    []byte
 	NAT     byte
+	Owner   bool
 }
 
 func memberOf(mm *pb.Member) RoomMember {
-	r := RoomMember{No: mm.GetMemberNo(), Account: mm.GetAccountId()}
+	r := RoomMember{No: mm.GetMemberNo(), Account: mm.GetAccountId(), Owner: mm.GetIsOwner()}
 	for _, e := range mm.GetEndpoints() {
 		if e.GetKind() != "udp" {
 			continue

@@ -51,14 +51,24 @@ func Member(memberID uint16, onlineID, name string) []byte {
 	return MemberOf(MemberInfo{No: uint32(memberID), Name: onlineID, Nick: name})
 }
 
+// OwnerFlag is the member flag attr bit of the room owner (SCE_NP_MATCHING2_ROOMMEMBER_FLAG_ATTR_OWNER). The firmware sets the room's owner
+// pointer from it (vsh 0x29f374 -> 0x29ec18 4th arg = flag>>31) and hands it to the game as memberList.owner (vsh 0x29e864: owner = the
+// member whose flag attr is negative). Terraria dereferences memberList.owner with no NULL check right after a successful CreateJoinRoom
+// (EBOOT 0x126bc0 lwz r9,12(r24); 0x126be4 lhz r0,56(r9)): without this bit it reads address 0x38 and the game freezes.
+const OwnerFlag = 0x80000000
+
 // MemberOf encodes a member with its NAT type and its 0x6e member bin attr. The console fills 0x6e in its own 0x3200/0x3201 request with
 // 4 bytes that are its public IPv4 address (seen on hardware: 37.228.205.125), and 0x13 with a small number taken as its NAT type
 // (inferred); handing them back per member is how a console learns where its peers are.
 func MemberOf(m MemberInfo) []byte {
 	b := binary.BigEndian.AppendUint16(nil, MemberID(m.No))
 	b = append(b, make([]byte, 8)...) // join date
-	b = append(b, 0, 0, 0, 0)         // flag attr
-	b = append(b, m.NAT, 0)           // nat type, team id
+	var flag uint32
+	if m.Owner {
+		flag = OwnerFlag
+	}
+	b = binary.BigEndian.AppendUint32(b, flag)
+	b = append(b, m.NAT, 0) // nat type, team id
 	nick := m.Nick
 	if nick == "" {
 		nick = m.Name
@@ -135,4 +145,5 @@ type MemberInfo struct {
 	Nick    string
 	Addr    []byte
 	NAT     byte
+	Owner   bool // flag attr bit 31 (OwnerFlag)
 }

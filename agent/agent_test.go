@@ -354,7 +354,7 @@ func TestRoomMessageForwarded(t *testing.T) {
 	if err != nil || ef.Kind != wire.KindEvent || ef.Cmd != wire.EventRoomBinary || !ef.Verify(hostKey) {
 		t.Fatalf("message event: %v %+v", err, ef)
 	}
-	if el := ef.Elements(); string(el[0x1b]) != "hello-relay" || string(el[0x16]) != string([]byte{0, 2}) || string(el[0x44]) != string(dest) {
+	if el := ef.Elements(); string(el[0x1b]) != "hello-relay" || string(el[0x16]) != string([]byte{0, 0x20}) || string(el[0x44]) != string(dest) {
 		t.Fatalf("message event elements %x", el)
 	}
 	cf, err := joiner.Call(wire.CmdSendRoomChatMessage, wire.TLV(0x44, 7, dest), wire.TLV(0x1a, 1, []byte("hi all")))
