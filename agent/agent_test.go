@@ -49,7 +49,7 @@ func (f *fakeRooms) Watch(ctx context.Context, _ string, fn func(agent.RoomEvent
 	}
 }
 
-func (f *fakeRooms) CreateRoom(_ context.Context, title, account string, max uint32, data []byte) (*agent.Room, error) {
+func (f *fakeRooms) CreateRoom(_ context.Context, title, compat, account string, max uint32, data []byte, _ wire.RoomAttrs, _ []byte) (*agent.Room, error) {
 	f.created++
 	return &agent.Room{ID: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", RoomID: 0xaaaaaaaabbbbcccc, MemberNo: 1}, nil
 }
@@ -59,10 +59,10 @@ func (f *fakeRooms) SetRoomData(context.Context, string, string, []byte) error {
 	return nil
 }
 func (f *fakeRooms) Heartbeat(_ context.Context, account string) { f.beats = append(f.beats, account) }
-func (f *fakeRooms) SearchRooms(context.Context, string, string, []string, uint32) ([]agent.RoomInfo, error) {
+func (f *fakeRooms) SearchRooms(context.Context, string, string, []string, uint32, []wire.SearchFilter) ([]agent.RoomInfo, error) {
 	return []agent.RoomInfo{{ID: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", RoomID: 0x0001aaaaaaaabbbb, Owner: "33333333-3333-3333-3333-333333333333", Network: "np", Max: 4, Members: 1}}, nil
 }
-func (f *fakeRooms) JoinRoom(_ context.Context, _ string, account string) (*agent.JoinedRoom, error) {
+func (f *fakeRooms) JoinRoom(_ context.Context, _ string, account string, _ []byte) (*agent.JoinedRoom, error) {
 	return &agent.JoinedRoom{ID: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", RoomID: 0x0001aaaaaaaabbbb, MemberNo: 2, Max: 4, Members: []agent.RoomMember{{No: 1, Account: "33333333-3333-3333-3333-333333333333"}, {No: 2, Account: account}}}, nil
 }
 
@@ -206,8 +206,9 @@ func TestHandshake(t *testing.T) {
 	if err != nil || ef.Kind != wire.KindEvent || ef.Cmd != wire.EventMemberJoined || !ef.Verify(roomKey) {
 		t.Fatalf("event: %v %+v", err, ef)
 	}
-	if ev := ef.Raw; binary.BigEndian.Uint64(ev[8:16]) != 0x0001aaaaaaaabbbb || !bytes.Contains(ef.Elements()[0x4b], []byte{10, 1, 2, 3}) {
-		t.Fatalf("event room id / joiner address: %x", ef.Raw)
+	// header since v0.2.17 (wire.Event): +12 the room handle (head[0..2] = 1), +14 the new member's id (slot 2 << 4)
+	if ev := ef.Raw; binary.BigEndian.Uint16(ev[12:]) != 1 || binary.BigEndian.Uint16(ev[14:]) != 0x20 || !bytes.Contains(ef.Elements()[0x4b], []byte{10, 1, 2, 3}) {
+		t.Fatalf("event room handle / member id / joiner address: %x", ef.Raw)
 	}
 
 	sf, err := c.Call(0x1200)
@@ -366,3 +367,10 @@ func TestRoomMessageForwarded(t *testing.T) {
 		t.Fatalf("chat event: %v %+v", err, ef)
 	}
 }
+
+func (f *fakeRooms) GetRoom(context.Context, string, string) (*agent.JoinedRoom, error) {
+	return &agent.JoinedRoom{ID: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", RoomID: 0x0001aaaaaaaabbbb, Max: 4}, nil
+}
+func (f *fakeRooms) SetRoomAttrs(context.Context, string, string, wire.RoomAttrs) error { return nil }
+func (f *fakeRooms) SetMemberBin(context.Context, string, string, string, []byte) error { return nil }
+func (f *fakeRooms) KickMember(context.Context, string, string, string) error           { return nil }

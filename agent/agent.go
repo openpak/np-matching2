@@ -27,6 +27,19 @@ const SessionTTL = 600 * time.Second
 type Title struct {
 	Key  string // the neutral title key in the matchmaking core ("terraria")
 	Pass []byte // the 128-byte communication passphrase
+	// Compat is the compatibility group of the title's rooms (the game's net version): a room is listed and joined only inside its group.
+	// Empty is Terraria's old-gen-1.2.4.
+	Compat string
+	// Status is the server status byte of the 0x1001 reply (SceNpMatching2Server.status: 1 = available). Terraria ignores it (0, as
+	// verified on hardware); Minecraft PS3 refuses to host unless it is 1.
+	Status byte
+}
+
+func (t Title) compat() string {
+	if t.Compat == "" {
+		return compatPS3
+	}
+	return t.Compat
 }
 
 // Core is what the agent needs from the matchmaking core.
@@ -37,12 +50,18 @@ type Core interface {
 
 // Rooms is the room side of the matchmaking core.
 type Rooms interface {
-	CreateRoom(ctx context.Context, title, account string, maxSlot uint32, data []byte) (*Room, error)
+	CreateRoom(ctx context.Context, title, compat, account string, maxSlot uint32, data []byte, attrs wire.RoomAttrs, memberBin []byte) (*Room, error)
 	LeaveRoom(ctx context.Context, session, account string) error
 	SetRoomData(ctx context.Context, session, account string, data []byte) error
 	Heartbeat(ctx context.Context, account string)
-	SearchRooms(ctx context.Context, title, compat string, networks []string, limit uint32) ([]RoomInfo, error)
-	JoinRoom(ctx context.Context, session, account string) (*JoinedRoom, error)
+	SearchRooms(ctx context.Context, title, compat string, networks []string, limit uint32, filters []wire.SearchFilter) ([]RoomInfo, error)
+	JoinRoom(ctx context.Context, session, account string, memberBin []byte) (*JoinedRoom, error)
+	// GetRoom reads a room's attributes and members as a member sees them. SetRoomAttrs merges attributes into a room (owner only),
+	// SetMemberBin replaces a member's 0x59 (the member or the owner), KickMember removes a member (owner only).
+	GetRoom(ctx context.Context, session, viewer string) (*JoinedRoom, error)
+	SetRoomAttrs(ctx context.Context, session, account string, attrs wire.RoomAttrs) error
+	SetMemberBin(ctx context.Context, session, actor, account string, bin []byte) error
+	KickMember(ctx context.Context, session, actor, account string) error
 	// SetEndpoints publishes a member's public IPv4 (4 bytes) and NAT type; Members lists a room as a member sees it; Watch streams
 	// the core's events for one account until ctx ends.
 	SetEndpoints(ctx context.Context, session, account string, addr []byte, nat byte) error
@@ -339,8 +358,8 @@ func (a *Agent) handle0(ctx context.Context, st *conn, f *wire.Frame) []byte {
 			return nil
 		}
 		log.Debug("matching2 request")
-		// element 0x1d = {u16, u8}, stored by the firmware in the agent context; the values are not meaningful so far.
-		return wire.Reply(t.Pass[:16], f.Cmd, 0, f.ReqID, wire.TLV(0x1d, 0, []byte{0, 1, 0}))
+		// element 0x1d = {u16 server id 1, u8 server status}: Minecraft PS3 requires status 1 (Title.Status), Terraria ignores it.
+		return wire.Reply(t.Pass[:16], f.Cmd, 0, f.ReqID, wire.TLV(0x1d, 0, []byte{0, 1, t.Status}))
 	case wire.CmdLogin:
 		return a.login(ctx, log, t, f, el)
 	}
@@ -414,17 +433,27 @@ func (a *Agent) handle0(ctx context.Context, st *conn, f *wire.Frame) []byte {
 		return a.searchRooms(ctx, log, t, st, f)
 	case 0x3201:
 		return a.joinRoom(ctx, log, t, st, f)
-	case 0x3202:
+	case 0x3202, 0x3204, 0x3206, 0x3207, 0x3211:
 		return a.roomRequest(ctx, log, st, f)
 	case wire.CmdSendRoomChatMessage, wire.CmdSendRoomMessage:
 		// Room messages are room-key MAC'd from a console; a session-key one (the test client) is answered here.
 		return a.roomRequest(ctx, log, st, f)
+	case 0x1005, 0x1203, 0x1204:
+		// DeleteServerContext (header only), the world-side step of JoinRoom (0x3a room id) and of LeaveRoom (0x3a): the room itself is
+		// created, joined and left by the 0x32xx commands, so these only need an empty answer (their reply schemas have no required element).
+		log.Info("matching2 command answered", "bytes", len(f.Raw))
+		return wire.Reply(st.sess.Key, f.Cmd, 0, f.ReqID)
+	case 0x1207:
+		return a.setExternal(ctx, log, st, f)
+	case 0x1208:
+		return a.roomDataExternalList(ctx, log, t, st, f)
 	case 0x1202:
 		if a.Rooms != nil && st.room == "" {
 			st.room = a.latestRoom(ctx, st.sess.Account)
 		}
 		if a.Rooms != nil && st.room != "" {
 			a.Rooms.SetRoomData(ctx, st.room, st.sess.Account, roomBlob(f))
+			a.storeAttrs(ctx, log, st, f)
 		}
 		return wire.Reply(st.sess.Key, f.Cmd, 0, f.ReqID)
 	}
@@ -518,7 +547,9 @@ func (a *Agent) createRoom(ctx context.Context, log *slog.Logger, t Title, st *c
 			maxSlot = m
 		}
 	}
-	room, err := a.Rooms.CreateRoom(ctx, t.Key, st.sess.Account, maxSlot, roomBlob(f))
+	attrs := f.RoomAttrs()
+	bin, _ := f.MemberAttr()
+	room, err := a.Rooms.CreateRoom(ctx, t.Key, t.compat(), st.sess.Account, maxSlot, roomBlob(f), attrs, bin)
 	if err != nil {
 		log.Error("matching2 create room", "err", err)
 		return nil
@@ -531,9 +562,10 @@ func (a *Agent) createRoom(ctx context.Context, log *slog.Logger, t Title, st *c
 		log.Error("matching2 room key", "err", err)
 		return nil
 	}
-	log.Info("matching2 room created", "session", room.ID, "max_slot", maxSlot, "bytes", len(f.Raw), "endpoint", len(addr) == 4)
-	rd := wire.RoomData{WorldID: 1, MaxSlot: uint16(maxSlot)}
-	me := wire.MemberInfo{No: room.MemberNo, Name: st.sess.OnlineID, Country: a.country(ctx, st.sess.Account), Addr: addr, NAT: nat, Owner: true}
+	log.Info("matching2 room created", "session", room.ID, "max_slot", maxSlot, "bytes", len(f.Raw), "endpoint", len(addr) == 4,
+		"bins", binSizes(attrs), "ints", attrs.Int, "member_bin", len(bin))
+	rd := roomData(attrs, uint16(maxSlot), wire.MemberID(room.MemberNo))
+	me := wire.MemberInfo{No: room.MemberNo, Name: st.sess.OnlineID, Country: a.country(ctx, st.sess.Account), Addr: addr, NAT: nat, Owner: true, Bin: bin}
 	els := wire.CreateJoinRoomReply(room.RoomID, rd, me, tok, tok)
 	return wire.Reply(st.sess.Key, f.Cmd, 0, f.ReqID, els...)
 }
@@ -547,7 +579,8 @@ func (a *Agent) searchRooms(ctx context.Context, log *slog.Logger, t Title, st *
 	if a.Rooms == nil {
 		return nil
 	}
-	rooms, err := a.Rooms.SearchRooms(ctx, t.Key, compatPS3, a.networks(), 20)
+	filters := f.SearchFilters()
+	rooms, err := a.Rooms.SearchRooms(ctx, t.Key, t.compat(), a.networks(), 20, filters)
 	if err != nil {
 		log.Error("matching2 search", "err", err)
 		return nil
@@ -558,9 +591,9 @@ func (a *Agent) searchRooms(ctx context.Context, log *slog.Logger, t Title, st *
 		if r.Network != "np" {
 			foreign++
 		}
-		items = append(items, wire.SearchItem{RoomID: r.RoomID, MaxSlot: uint16(r.Max), Owner: a.onlineID(ctx, r.Owner), OwnerCountry: a.country(ctx, r.Owner)})
+		items = append(items, wire.SearchItem{RoomID: r.RoomID, MaxSlot: uint16(r.Max), Owner: a.onlineID(ctx, r.Owner), OwnerCountry: a.country(ctx, r.Owner), Attrs: r.Attrs})
 	}
-	log.Info("matching2 search", "rooms", len(items), "cross_network", foreign, "bytes", len(f.Raw))
+	log.Info("matching2 search", "rooms", len(items), "cross_network", foreign, "bytes", len(f.Raw), "filters", filters)
 	return wire.Reply(st.sess.Key, f.Cmd, 0, f.ReqID, wire.SearchRoomReply(items))
 }
 
@@ -570,7 +603,7 @@ func (a *Agent) joinRoom(ctx context.Context, log *slog.Logger, t Title, st *con
 	if a.Rooms == nil {
 		return nil
 	}
-	rooms, err := a.Rooms.SearchRooms(ctx, t.Key, compatPS3, a.networks(), 50)
+	rooms, err := a.Rooms.SearchRooms(ctx, t.Key, t.compat(), a.networks(), 50, nil)
 	if err != nil || len(rooms) == 0 {
 		log.Warn("matching2 join: no room", "err", err)
 		return nil
@@ -599,7 +632,8 @@ func (a *Agent) joinRoom(ctx context.Context, log *slog.Logger, t Title, st *con
 		log.Warn("cross-play join not yet supported (relay pending)", "session", pick.ID, "network", pick.Network, "by", how, "refused_since_start", n)
 		return wire.Reply(st.sess.Key, f.Cmd, errRoomFull, f.ReqID)
 	}
-	j, err := a.Rooms.JoinRoom(ctx, pick.ID, st.sess.Account)
+	bin, _ := f.MemberAttr()
+	j, err := a.Rooms.JoinRoom(ctx, pick.ID, st.sess.Account, bin)
 	if err != nil {
 		log.Warn("matching2 join refused", "err", err)
 		return nil
@@ -612,10 +646,10 @@ func (a *Agent) joinRoom(ctx context.Context, log *slog.Logger, t Title, st *con
 		log.Error("matching2 room key", "err", err)
 		return nil
 	}
-	log.Info("matching2 room joined", "session", j.ID, "by", how, "member", j.MemberNo, "endpoint", len(addr) == 4)
+	log.Info("matching2 room joined", "session", j.ID, "by", how, "member", j.MemberNo, "endpoint", len(addr) == 4, "member_bin", len(bin))
 	members := make([]wire.MemberInfo, 0, len(j.Members))
 	for _, m := range j.Members {
-		mi := wire.MemberInfo{No: m.No, Name: st.sess.OnlineID, Country: a.country(ctx, m.Account), Addr: m.Addr, NAT: m.NAT, Owner: m.Owner}
+		mi := wire.MemberInfo{No: m.No, Name: st.sess.OnlineID, Country: a.country(ctx, m.Account), Addr: m.Addr, NAT: m.NAT, Owner: m.Owner, Bin: m.Bin}
 		if m.Account != st.sess.Account {
 			mi.Name = a.onlineID(ctx, m.Account)
 		} else if len(addr) == 4 {
@@ -624,7 +658,7 @@ func (a *Agent) joinRoom(ctx context.Context, log *slog.Logger, t Title, st *con
 		members = append(members, mi)
 	}
 	markOwner(members)
-	rd := wire.RoomData{WorldID: 1, MaxSlot: uint16(j.Max)}
+	rd := roomData(j.Attrs, uint16(j.Max), wire.MemberID(ownerNo(members)))
 	els := wire.JoinRoomReply(j.MemberNo, j.RoomID, rd, members, tok, tok)
 	return wire.Reply(st.sess.Key, f.Cmd, 0, f.ReqID, els...)
 }
@@ -719,6 +753,14 @@ func (a *Agent) roomRequest(ctx context.Context, log *slog.Logger, st *conn, f *
 		return wire.Reply(key, f.Cmd, 0, f.ReqID)
 	case wire.CmdSendRoomChatMessage, wire.CmdSendRoomMessage:
 		return a.roomMessage(ctx, log, st, f, key)
+	case 0x3204:
+		return a.setRoomInternal(ctx, log, st, f, key)
+	case 0x3206:
+		return a.setMemberData(ctx, log, st, f, key)
+	case 0x3207:
+		return a.getMemberData(ctx, log, st, f, key)
+	case 0x3211:
+		return a.kickout(ctx, log, st, f, key)
 	}
 	if !a.Stats.Quiet(fmt.Sprint("unimpl", f.Cmd)) {
 		log.Warn("matching2 unimplemented room command", "elements", elementIDs(f.Elements()), "bytes", len(f.Raw), "hex", hex.EncodeToString(f.Redacted()))
@@ -822,10 +864,27 @@ func (a *Agent) watch(st *conn) {
 	}()
 }
 
-// pushEvent turns a core event for this console into a Matching2 room event. Only MemberJoined (0x320c) is sent: the other events need
-// elements not decoded yet (0x62).
+// pushEvent turns a core event for this console into a Matching2 room event: MemberJoined (0x320c), UpdatedRoomDataInternal (0x320e) and
+// UpdatedRoomMemberDataInternal (0x320d). MemberLeft, Kickedout and RoomDestroyed need the element 0x62, which is not decoded: they are only
+// logged (the member's RUDP link dies with the room anyway).
 func (a *Agent) pushEvent(ctx context.Context, st *conn, account, online string, ev RoomEvent) {
-	if ev.Type != "member_joined" || ev.Subject == account || ev.Session == "" {
+	if ev.Subject == account || ev.Session == "" {
+		return
+	}
+	switch ev.Type {
+	case "member_joined":
+	case "session_updated":
+		a.pushRoomData(ctx, st, account, ev)
+		return
+	case "member_updated":
+		if ev.Text == "" { // text "endpoints" is the address publish, not a data change
+			a.pushMemberData(ctx, st, account, ev)
+		}
+		return
+	case "member_left", "session_ended":
+		a.log().Info("matching2 event not pushed (0x62 undecoded)", "type", ev.Type, "session", ev.Session, "account", account)
+		return
+	default:
 		return
 	}
 	log := a.log().With("session", ev.Session, "account", account)
@@ -883,6 +942,26 @@ func (a *Agent) resolveSession(ctx context.Context, st *conn, f *wire.Frame) {
 		for _, s := range sessions {
 			if f.Verify(s.Key) {
 				st.comm, st.sess = comm, s
+				return
+			}
+		}
+	}
+	// A room command (0x32xx) on a connection that never sent a session-MAC'd request is MAC'd with a member's room key: find the member, and
+	// through it the title and login.
+	if f.Cmd>>8 != 0x32 {
+		return
+	}
+	keys, err := a.Store.RecentRoomKeys(ctx, "")
+	if err != nil {
+		return
+	}
+	for _, k := range keys {
+		if !f.Verify(k.Key) {
+			continue
+		}
+		for comm := range a.Titles {
+			if sess, err := a.Store.SessionOf(ctx, comm, k.Account); err == nil && sess != nil {
+				st.comm, st.sess = comm, sess
 				return
 			}
 		}

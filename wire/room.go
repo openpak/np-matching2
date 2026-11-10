@@ -29,6 +29,8 @@ type RoomData struct {
 	Flags   []byte // element 0x6d, 0..64 bytes
 	Attr1   []byte // element 0x57 data
 	Attr2   []byte // element 0x58 data
+	// LastMember is the wire id of the member that last wrote the internal attrs. Zero keeps the ids 1 and 2 Terraria was verified with.
+	LastMember uint16
 }
 
 func (r RoomData) Element() []byte {
@@ -39,8 +41,12 @@ func (r RoomData) Element() []byte {
 	binary.BigEndian.PutUint64(b[16:], r.RoomID)
 	binary.BigEndian.PutUint64(b[24:], r.PwMask)
 	b = append(b, TLV(0x41, 7, make([]byte, 32))...)
-	b = append(b, TLV(0x57, 0, binAttr(1, true, r.Attr1))...)
-	b = append(b, TLV(0x58, 0, binAttr(2, true, r.Attr2))...)
+	l1, l2 := uint16(1), uint16(2)
+	if r.LastMember != 0 {
+		l1, l2 = r.LastMember, r.LastMember
+	}
+	b = append(b, internalAttr(AttrInt1, l1, r.Attr1)...)
+	b = append(b, internalAttr(AttrInt2, l2, r.Attr2)...)
 	b = append(b, TLV(0x6d, 2, r.Flags)...)
 	b = append(b, TLV(0x02, 0, []byte{0x00, 0x47, 0, 0})...) // no room groups
 	return TLV(0x71, 0, b)
@@ -82,7 +88,7 @@ func MemberOf(m MemberInfo) []byte {
 	b = append(b, TLV(0x0b, 0, NpID(m.Name, m.Country))...)
 	b = append(b, TLV(0x0c, 1, nm)...)
 	b = append(b, TLV(0x0d, 1, nil)...)
-	b = append(b, TLV(0x59, 0, binAttr(0, false, nil))...)
+	b = append(b, TLV(0x59, 0, binAttr(0, false, m.Bin))...)
 	b = append(b, TLV(0x6e, 2, addr)...)
 	return TLV(0x4b, 0, b)
 }
@@ -101,6 +107,7 @@ type SearchItem struct {
 	MaxSlot      uint16
 	Owner        string
 	OwnerCountry string
+	Attrs        RoomAttrs // the external bins and searchable ints the host set (0x4c-0x53, 0x55, 0x56)
 }
 
 func (r SearchItem) element() []byte {
@@ -112,6 +119,7 @@ func (r SearchItem) element() []byte {
 	b = binary.BigEndian.AppendUint16(b, r.MaxSlot)
 	b = append(b, NpID(r.Owner, r.OwnerCountry)...)
 	b = append(b, TLV(0x41, 7, make([]byte, 32))...)
+	b = append(b, r.Attrs.externalItems()...)
 	return TLV(0x45, 0, b)
 }
 
@@ -145,5 +153,6 @@ type MemberInfo struct {
 	Nick    string
 	Addr    []byte
 	NAT     byte
-	Owner   bool // flag attr bit 31 (OwnerFlag)
+	Owner   bool   // flag attr bit 31 (OwnerFlag)
+	Bin     []byte // the member's 0x59 bin attr (the game's local-player mask; none for Terraria)
 }

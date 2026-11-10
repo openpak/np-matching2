@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.2.21
+
+Minecraft: PlayStation 3 Edition (NPEB01899 01.84, NP communication id NPWR05636_00) can host (prds#177, prds#163; research minecraft-lce/ps3-0184-vs-wiiu-2026-11-10.md, ps3/matching2-protocol.md §35). Terraria's create and join replies are byte-identical (`wire.TestCreateJoinReplyGolden` unchanged).
+
+- **Per-title settings.** `NP_MATCHING_TITLES` entries take an optional `compat` (the room compatibility group, default Terraria's `old-gen-1.2.4`) and `status` (the byte in the 0x1001 reply's element 0x1d = {server id 1, status}). The title key `minecraft` defaults to group `lce-ps3-0884` and status 1: Minecraft will not host unless the server is "available".
+- **Attributes, stored in the matchmaking core.** The two internal bins 0x57/0x58, the two external bins 0x55/0x56 and the searchable ints 0x4c-0x53 of a request are session attrs in the core (they survive an agent restart); each member's 0x59 is that member's data. The attribute id is the TLV element id (firmware builders 0x2b9628, 0x2b9ca0, 0x2b9d60, 0x2b9754). The ints and external bins are searchable in the core, because the core shows a non-member only searchable attrs and a joiner reads the external ones before it is a member.
+- **Served.** 0x3200 and 0x3201 return the stored internal bins and each member's 0x59; 0x1202 and 0x1207 (SetRoomDataExternal) store external attrs; 0x3204 (SetRoomDataInternal, reply with the required 0x70) stores the owner's internal bins; 0x3206 and 0x3207 set and read a member's 0x59; 0x3211 kicks through the core; 0x1208 (GetRoomDataExternalList) lists the named rooms with the asked attrs; 0x1200/0x120c SearchRoom now applies int filters (operator order EQ NE LT LE GT GE is inferred) and lists the external attrs; 0x1005, 0x1203 and 0x1204 answer empty.
+- **Events.** UpdatedRoomDataInternal (0x320e) and UpdatedRoomMemberDataInternal (0x320d) are pushed to the other members when the owner or a member changes the data (with `NP_MATCHING_ROOM_EVENTS=1`). MemberLeft, Kickedout and RoomDestroyed need element 0x62 (not decoded): they are logged, not pushed.
+- **Unproven on a console.** The first request of each of 0x1005, 0x1203, 0x1204, 0x1207, 0x1208, 0x3204, 0x3206, 0x3207 and 0x3211 is logged at WARN with its redacted hex ("statically decoded command, first sight").
+- A 0x32xx room command on a connection that never sent a session-MAC'd request is now resolved through the member's room key (it logged "unknown title" before).
+- Fixed the stale `TestHandshake` event-header assertion (v0.2.17 moved the room handle to +12).
+
 ## v0.2.20
 
 Hosting with a real room on the console (prds#145; research matching2-protocol §34). v0.2.16's own member id 1 sat in slot 0, the firmware's owner pointer, so its create done failed with 0x800223ff (vsh 0x29a378 -> 0x29ec18) and the console never had a room; that is why 0x1202 never followed on v0.2.16. v0.2.17/v0.2.18 (id 0x10) let the create complete, and the firmware handed Terraria a member list with owner = NULL, because no member carried the owner flag (vsh 0x29e864). Terraria dereferences it unchecked (EBOOT 0x126bc0/0x126be4) and froze. Member ids are `no << 4` again, and the room owner's member element carries flag attr 0x80000000 in the create reply, in the join reply's member list (core `is_owner`, else the lowest member number) and in events. The golden test now pins those bytes.

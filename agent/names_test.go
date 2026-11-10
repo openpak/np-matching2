@@ -48,10 +48,38 @@ type rooms struct {
 	list     []RoomInfo
 	networks []string
 	joined   int
+	// attribute side: the room the fake holds, what the agent wrote into it and who it kicked
+	room      JoinedRoom
+	setAttrs  []wire.RoomAttrs
+	memberBin map[string][]byte
+	kicked    []string
+	filters   []wire.SearchFilter
+	created   struct {
+		compat string
+		attrs  wire.RoomAttrs
+		bin    []byte
+	}
 }
 
-func (r *rooms) CreateRoom(context.Context, string, string, uint32, []byte) (*Room, error) {
-	return nil, nil
+func (r *rooms) CreateRoom(_ context.Context, _, compat, _ string, _ uint32, _ []byte, attrs wire.RoomAttrs, bin []byte) (*Room, error) {
+	r.created.compat, r.created.attrs, r.created.bin = compat, attrs, bin
+	return &Room{ID: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", RoomID: 1<<48 | 0xaaaabbbbcccc, MemberNo: 1}, nil
+}
+func (r *rooms) GetRoom(context.Context, string, string) (*JoinedRoom, error) { return &r.room, nil }
+func (r *rooms) SetRoomAttrs(_ context.Context, _, _ string, a wire.RoomAttrs) error {
+	r.setAttrs = append(r.setAttrs, a)
+	return nil
+}
+func (r *rooms) SetMemberBin(_ context.Context, _, _, account string, bin []byte) error {
+	if r.memberBin == nil {
+		r.memberBin = map[string][]byte{}
+	}
+	r.memberBin[account] = bin
+	return nil
+}
+func (r *rooms) KickMember(_ context.Context, _, _, account string) error {
+	r.kicked = append(r.kicked, account)
+	return nil
 }
 func (r *rooms) LeaveRoom(context.Context, string, string) error                  { return nil }
 func (r *rooms) SetRoomData(context.Context, string, string, []byte) error        { return nil }
@@ -59,8 +87,8 @@ func (r *rooms) Heartbeat(context.Context, string)                              
 func (r *rooms) SetEndpoints(context.Context, string, string, []byte, byte) error { return nil }
 func (r *rooms) Members(context.Context, string, string) ([]RoomMember, error)    { return nil, nil }
 func (r *rooms) Watch(context.Context, string, func(RoomEvent)) error             { return nil }
-func (r *rooms) SearchRooms(_ context.Context, _, _ string, networks []string, _ uint32) ([]RoomInfo, error) {
-	r.networks = networks
+func (r *rooms) SearchRooms(_ context.Context, _, _ string, networks []string, _ uint32, filters []wire.SearchFilter) ([]RoomInfo, error) {
+	r.networks, r.filters = networks, filters
 	var out []RoomInfo
 	for _, x := range r.list {
 		for _, n := range networks {
@@ -71,7 +99,7 @@ func (r *rooms) SearchRooms(_ context.Context, _, _ string, networks []string, _
 	}
 	return out, nil
 }
-func (r *rooms) JoinRoom(_ context.Context, session, account string) (*JoinedRoom, error) {
+func (r *rooms) JoinRoom(_ context.Context, session, account string, _ []byte) (*JoinedRoom, error) {
 	r.joined++
 	return &JoinedRoom{ID: session, MemberNo: 2, Max: 8, Members: []RoomMember{{No: 1, Account: "acc-host"}, {No: 2, Account: account}}}, nil
 }
@@ -100,7 +128,7 @@ func frame(cmd uint16, els ...[]byte) *wire.Frame {
 
 // No room attribute the agent writes may carry an identity (owner rule: names come from the account core, never a row copy).
 func TestRoomAttrsCarryNoIdentity(t *testing.T) {
-	for _, at := range roomAttrs() {
+	for _, at := range roomAttrs(compatPS3) {
 		n := strings.ToLower(at.GetName())
 		for _, bad := range []string{"name", "nick", "online", "npid", "handle", "gamertag", "mii", "email", "country"} {
 			if strings.Contains(n, bad) {

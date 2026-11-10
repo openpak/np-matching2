@@ -144,12 +144,17 @@ func serve(ln net.Listener, h func(net.Conn)) {
 }
 
 func loadTitles() (map[string]agent.Title, error) {
-	// NP_MATCHING_TITLES: {"NPWR04270_00": {"title": "terraria", "passphrase": "<256 hex>"}}
+	// NP_MATCHING_TITLES: {"NPWR04270_00": {"title": "terraria", "passphrase": "<256 hex>"}, "NPWR05636_00": {"title": "minecraft", "passphrase": "<256 hex>"}}
+	// Optional per title: "compat" (the room compatibility group) and "status" (the 0x1001 server status byte). The defaults are Terraria's
+	// (old-gen-1.2.4, status 0); the title key "minecraft" defaults to its PS3 01.84 net version group and status 1.
 	raw, err := os.ReadFile(os.Getenv("NP_MATCHING_TITLES"))
 	if err != nil {
 		return nil, fmt.Errorf("NP_MATCHING_TITLES: %w", err)
 	}
-	var cfg map[string]struct{ Title, Passphrase string }
+	var cfg map[string]struct {
+		Title, Passphrase, Compat string
+		Status                    *byte
+	}
 	if err := json.Unmarshal(raw, &cfg); err != nil {
 		return nil, fmt.Errorf("NP_MATCHING_TITLES: %w", err)
 	}
@@ -159,7 +164,17 @@ func loadTitles() (map[string]agent.Title, error) {
 		if err != nil || len(p) != 128 || t.Title == "" {
 			return nil, fmt.Errorf("NP_MATCHING_TITLES %s: want title and a 256-hex passphrase", id)
 		}
-		titles[id] = agent.Title{Key: t.Title, Pass: p}
+		title := agent.Title{Key: t.Title, Pass: p, Compat: t.Compat}
+		if t.Title == "minecraft" {
+			if title.Compat == "" {
+				title.Compat = "lce-ps3-0884"
+			}
+			title.Status = 1
+		}
+		if t.Status != nil {
+			title.Status = *t.Status
+		}
+		titles[id] = title
 	}
 	return titles, nil
 }
