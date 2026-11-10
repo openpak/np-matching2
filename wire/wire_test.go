@@ -60,3 +60,18 @@ func TestNpIDRealm(t *testing.T) {
 		t.Fatalf("default: %q", got)
 	}
 }
+
+// Full element bytes for the realms the firmware derives from <id>@<cc>.<cc>.np.playstation.net/ps3 (research §30/§32):
+// online id NUL padded to 16, then <cc><cc>ps3 and a NUL, nothing else.
+func TestNpIDBytesPerRealm(t *testing.T) {
+	for _, c := range []struct{ id, cc, opt string }{
+		{"PS3Test", "pt", "ptptps3"}, {"PS3Test", "PT", "ptptps3"}, {"Joiner", "de", "dedeps3"}, {"Joiner", "", "ususps3"}, {"Joiner", "x1", "ususps3"},
+	} {
+		want := make([]byte, 24)
+		copy(want, c.id)
+		copy(want[16:], c.opt)
+		if got := NpID(c.id, c.cc); !bytes.Equal(got, want) {
+			t.Fatalf("%s/%q: %x want %x", c.id, c.cc, got, want)
+		}
+	}
+}
