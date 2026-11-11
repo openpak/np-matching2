@@ -1,5 +1,18 @@
 # Changelog
 
+## v0.2.26
+
+Why no PS3 host ever started signalling toward a member (prds#145; research ps3/matching2-protocol.md §40).
+
+- **Room data internal echoes the host's signalling option (0x6d).** A host's 0x3200 carries its SceNpMatching2SignalingOptParam as element
+  0x6d (Terraria 01.12 `01 00..` = mesh, Minecraft 01.84 `02 00..` = star with the owner as hub, recorded 2026-11-11). The firmware's
+  signalling manager (vsh 4.93 0x1e4950, on the CreateJoinRoom/JoinRoom done) reads the option only from the reply's room data 0x6d
+  (0x29cb6c stores it at room+0x48, 0x288bf4 serves it), and 0x1e4274 calls ActivateConnection toward a member only for type 1, or type 2
+  when one side is the hub. We returned 0x6d empty, so the type was 0 and no PS3 ever offered, as host or joiner. The option is now stored as
+  room attr `b6d` in the core (members-only) and returned in the create and join replies. Bridged (Minecraft) rooms carry star `02 00..`.
+- Neither game signals on its own: Terraria 01.12 imports no `sceNpSignaling*` function (only Matching2's RegisterSignalingCallback and
+  SignalingGetConnectionStatus), the same model as Minecraft. Golden test: `agent.TestSignalingOptionIsEchoedInRoomData`.
+
 ## v0.2.25
 
 Room events as the PS3 takes them, from the 2026-11-11 hardware experiment and a vsh 4.93 decode (prds#145; research ps3/matching2-protocol.md §39).

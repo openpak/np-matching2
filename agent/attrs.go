@@ -16,10 +16,10 @@ import (
 // not from a live capture: the first request of each of these commands is logged at WARN with its hex so the first real console shows them.
 // Every value is stored in the matchmaking core (room attrs, member data), never in this process.
 
-// roomData is the 0x71 data for a room. A room with no internal attrs (Terraria) keeps the verified bytes; otherwise the two attrs come back
-// as the host set them, last written by `last` (the owner's wire member id).
+// roomData is the 0x71 data for a room, with the host's signalling option (0x6d) echoed. A room with no internal attrs (Terraria) keeps the
+// verified attr bytes; otherwise the two attrs come back as the host set them, last written by `last` (the owner's wire member id).
 func roomData(attrs wire.RoomAttrs, maxSlot, last uint16) wire.RoomData {
-	rd := wire.RoomData{WorldID: 1, MaxSlot: maxSlot}
+	rd := wire.RoomData{WorldID: 1, MaxSlot: maxSlot, Flags: attrs.Bin[wire.AttrSigOpt]}
 	a1, ok1 := attrs.Bin[wire.AttrInt1]
 	a2, ok2 := attrs.Bin[wire.AttrInt2]
 	if ok1 || ok2 {

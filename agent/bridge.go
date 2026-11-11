@@ -47,8 +47,12 @@ func bridgedAttrs(ext, in []byte) wire.RoomAttrs {
 	return wire.RoomAttrs{Bin: map[uint16][]byte{
 		wire.AttrExt1: ext[:extLen/2], wire.AttrExt2: ext[extLen/2:],
 		wire.AttrInt1: in[:intLen/2], wire.AttrInt2: in[intLen/2:],
+		wire.AttrSigOpt: bridgedSigOpt,
 	}, Int: map[uint16]uint32{}}
 }
+
+// bridgedSigOpt is the signalling option Minecraft 01.84 creates its rooms with (star, hub = owner), so a PS3 joiner signals to the bridge.
+var bridgedSigOpt = []byte{2, 0, 0, 0, 0, 0, 0, 0}
 
 // bridgedMemberBin is the host's 0x59 as a console writes it on JoinRoom: the mask of its local players, one player.
 var bridgedMemberBin = []byte{0, 0, 0, 1}

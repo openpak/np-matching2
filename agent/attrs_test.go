@@ -3,6 +3,7 @@ package agent
 import (
 	"bytes"
 	"context"
+	"encoding/hex"
 	"testing"
 
 	"openpak/np-matching2/wire"
@@ -137,5 +138,32 @@ func TestServerStatusIsPerTitle(t *testing.T) {
 		if !bytes.Equal(got, []byte{0, 1, want}) {
 			t.Fatalf("%s: 0x1d = %x", comm, got)
 		}
+	}
+}
+
+// The host's signalling option (0x6d in its 0x3200, recorded from the real PS3 2026-11-11: Terraria 01.12 mesh, Minecraft 01.84 star) must
+// come back in the room data of the create reply and of every join reply: the firmware's signalling manager reads it only from there (vsh
+// 0x1e4950 -> 0x288bf4) and activates toward room members only for type 1 or 2 (0x1e4274). Empty, the PS3 host never offers (runs 7-9, mc1/mc2).
+func TestSignalingOptionIsEchoedInRoomData(t *testing.T) {
+	for _, c := range []struct {
+		title Title
+		opt   string
+	}{{Title{Key: "terraria"}, "0100000000000000"}, {mcTitle, "0200000000000000"}} {
+		opt, _ := hex.DecodeString(c.opt)
+		a, r, st := testAgent()
+		f := reply(t, a.createRoom(context.Background(), a.log(), c.title, st, frame(0x3200, wire.TLV(0x3f, 4, []byte{0, 8}), wire.TLV(0x6d, 2, opt))))
+		want := wire.TLV(0x6d, 2, opt)
+		if !bytes.Contains(f.Elements()[0x71], want) {
+			t.Fatalf("%s: create reply room data lacks %x", c.title.Key, want)
+		}
+		if !bytes.Equal(r.created.attrs.Bin[wire.AttrSigOpt], opt) {
+			t.Fatalf("%s: core did not keep the option: %+v", c.title.Key, r.created.attrs)
+		}
+		if !bytes.Contains(roomData(r.created.attrs, 8, 0x10).Element(), want) {
+			t.Fatalf("%s: join room data lacks the option", c.title.Key)
+		}
+	}
+	if got := bridgedAttrs(make([]byte, extLen), make([]byte, intLen)).Bin[wire.AttrSigOpt]; !bytes.Equal(got, []byte{2, 0, 0, 0, 0, 0, 0, 0}) {
+		t.Fatalf("bridged room option %x", got)
 	}
 }

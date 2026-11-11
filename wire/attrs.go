@@ -13,10 +13,15 @@ const (
 	AttrInt1     = 0x57 // internal bin attr 1: [u16 last-update member id][8 byte time][TLV 0x01 data], data 0..256
 	AttrInt2     = 0x58
 	AttrMember   = 0x59 // member bin attr internal 1: [8 byte time][TLV 0x01 data]
+	// AttrSigOpt is the room's SceNpMatching2SignalingOptParam (type u8: 1 mesh, 2 star; flag u8, bit 0 manual mode; u16 hub member id, 0 =
+	// owner; 4 reserved), sent by the host in its 0x3200 request (Terraria 01.12 = 01 00.., Minecraft 01.84 = 02 00..). The firmware takes it
+	// back only from the reply's room data internal 0x6d (vsh 0x29cb6c -> room+0x48), and its signalling manager (vsh 0x1e4950, read via
+	// 0x288bf4 for attr 0x6d) activates connections toward members only for type 1 or 2 (0x1e4274). Returned empty, no PS3 ever signals.
+	AttrSigOpt = 0x6d
 )
 
-// RoomAttrs are the attribute values a console set on a room, by attribute id: Bin the external and internal bins (0x55-0x58), Int the
-// searchable ints (0x4c-0x53).
+// RoomAttrs are the attribute values a console set on a room, by attribute id: Bin the external and internal bins (0x55-0x58) and the
+// signalling option (0x6d), Int the searchable ints (0x4c-0x53).
 type RoomAttrs struct {
 	Bin map[uint16][]byte
 	Int map[uint16]uint32
@@ -62,7 +67,7 @@ func (f *Frame) RoomAttrs() RoomAttrs {
 		switch {
 		case id >= AttrIntFirst && id <= AttrIntLast && len(v) == 4:
 			a.Int[id] = binary.BigEndian.Uint32(v)
-		case id == AttrExt1 || id == AttrExt2:
+		case id == AttrExt1 || id == AttrExt2 || id == AttrSigOpt && len(v) > 0 && len(v) <= 64:
 			a.Bin[id] = append([]byte{}, v...)
 		case id == AttrInt1 || id == AttrInt2:
 			if len(v) >= 10 {
