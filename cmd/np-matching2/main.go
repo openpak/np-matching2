@@ -128,6 +128,11 @@ func run() error {
 
 	mux := http.NewServeMux()
 	a.Register(mux)
+	if os.Getenv("NP_BRIDGE_KEY") != "" {
+		a.Bridge = mm
+		a.RegisterBridge(mux)
+		log.Info("np-matching2 bridge routes on (NP_BRIDGE_KEY)")
+	}
 	nphttp.Health(mux)
 	log.Info("np-matching2 up", "titles", len(titles))
 	return nphttp.Run(ctx, mux, nphttp.Env("NP_HTTP_ADDR", ":8538"), "", nil)

@@ -82,6 +82,9 @@ type Agent struct {
 	Stats   Stats
 	Capture *Capture
 	Rooms   Rooms
+	// Bridge keeps the rooms of games hosted on other consoles (bridge.go); nil turns the bridge routes off.
+	Bridge BridgeRooms
+	joins  joinFeed
 	// RoomHost and RoomPort are the room-server endpoint handed to the console in the 0x1209 reply (this agent's plain port).
 	RoomHost string
 	RoomPort uint16
@@ -636,6 +639,9 @@ func (a *Agent) joinRoom(ctx context.Context, log *slog.Logger, t Title, st *con
 	j, err := a.Rooms.JoinRoom(ctx, pick.ID, st.sess.Account, bin)
 	if err != nil {
 		log.Warn("matching2 join refused", "err", err)
+		if pick.Bridge != "" {
+			a.recordJoin(st, f, pick, RoomMember{}, nil, 0, err.Error())
+		}
 		return nil
 	}
 	st.room = j.ID
@@ -647,6 +653,11 @@ func (a *Agent) joinRoom(ctx context.Context, log *slog.Logger, t Title, st *con
 		return nil
 	}
 	log.Info("matching2 room joined", "session", j.ID, "by", how, "member", j.MemberNo, "endpoint", len(addr) == 4, "member_bin", len(bin))
+	if pick.Bridge != "" {
+		// a game hosted on another console: the join, its handshake data and the endpoint the console published go to the directory, which
+		// hands them to the transport leg that answers for the host
+		a.recordJoin(st, f, pick, RoomMember{No: j.MemberNo}, addr, nat, "")
+	}
 	members := make([]wire.MemberInfo, 0, len(j.Members))
 	for _, m := range j.Members {
 		mi := wire.MemberInfo{No: m.No, Name: st.sess.OnlineID, Country: a.country(ctx, m.Account), Addr: m.Addr, NAT: m.NAT, Owner: m.Owner, Bin: m.Bin}

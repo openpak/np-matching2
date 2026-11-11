@@ -9,8 +9,10 @@ import (
 	"strings"
 
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/status"
 
 	pb "github.com/openpak/matchmaking/proto/openpak/matchmaking/v1"
 	"openpak/np-matching2/wire"
@@ -151,6 +153,7 @@ type RoomInfo struct {
 	Max     uint32
 	Members uint32
 	Attrs   wire.RoomAttrs // the attributes the host set
+	Bridge  string         // the session directory's game id when this is a bridged room (a game hosted on another console), else ""
 }
 
 // SearchRooms lists open rooms of the title in the searcher's compatibility group (forced by the caller: a PS3 only sees old-gen-1.2.4
@@ -173,8 +176,11 @@ func (m *MatchmakingCore) SearchRooms(ctx context.Context, title, compat string,
 	for _, x := range res.GetSessions() {
 		ri := RoomInfo{ID: x.GetId(), RoomID: roomIDOf(x.GetId()), Owner: x.GetOwnerId(), Network: x.GetTitle().GetNetwork(), Max: x.GetMaxMembers(), Attrs: attrsFromPB(x.GetAttrs())}
 		for _, a := range x.GetAttrs() {
-			if a.GetName() == "$members" {
+			switch a.GetName() {
+			case "$members":
 				ri.Members = uint32(a.GetIntValue())
+			case bridgeAttr:
+				ri.Bridge = a.GetStringValue()
 			}
 		}
 		out = append(out, ri)
@@ -316,5 +322,57 @@ func (m *MatchmakingCore) SetMemberBin(ctx context.Context, session, actor, acco
 // KickMember removes a member from the room (the owner's KickoutRoomMember).
 func (m *MatchmakingCore) KickMember(ctx context.Context, session, actor, account string) error {
 	_, err := m.C.KickMember(m.ctx(ctx), &pb.KickMemberRequest{SessionId: session, AccountId: account, Actor: actor})
+	return err
+}
+
+// bridgeAttr names the searchable core attribute that marks a bridged room and carries the session directory's game id.
+const bridgeAttr = "bridge"
+
+// UpsertBridged keeps the room of a bridged game (bridge.go): created with the game id as the session's unique key (so a repeat is an update,
+// never a second room), owned by the hosting player's account, without owner migration (the room ends when the host's game does).
+func (m *MatchmakingCore) UpsertBridged(ctx context.Context, title, compat, account, game string, maxSlot uint32, attrs wire.RoomAttrs, memberBin []byte) (*Room, error) {
+	all := append(append(roomAttrs(compat), attrsToPB(attrs)...), &pb.Attr{Name: bridgeAttr, Type: pb.AttrType_ATTR_TYPE_STRING, StringValue: game, Searchable: true})
+	res, err := m.C.CreateSession(m.ctx(ctx), &pb.CreateSessionRequest{Title: &pb.TitleRef{Network: "np", Title: title}, Creator: account, Network: "np", Kind: "room",
+		MaxMembers: maxSlot, TtlSeconds: 300, UniqueKey: game, Attrs: all, MemberData: memberBin})
+	if err == nil {
+		id := res.GetSession().GetId()
+		return &Room{ID: id, RoomID: roomIDOf(id), MemberNo: res.GetMemberNo()}, nil
+	}
+	if status.Code(err) != codes.AlreadyExists {
+		return nil, err
+	}
+	s, err := m.findBridged(ctx, title, game)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := m.C.UpdateSession(m.ctx(ctx), &pb.UpdateSessionRequest{SessionId: s.GetId(), Actor: s.GetOwnerId(), SetAttrs: attrsToPB(attrs)}); err != nil {
+		return nil, err
+	}
+	return &Room{ID: s.GetId(), RoomID: roomIDOf(s.GetId()), MemberNo: 1}, nil
+}
+
+func (m *MatchmakingCore) findBridged(ctx context.Context, title, game string) (*pb.Session, error) {
+	res, err := m.C.SearchSessions(m.ctx(ctx), &pb.SearchSessionsRequest{Title: &pb.TitleRef{Network: "np", Title: title}, Network: "np", Networks: []string{"np"}, Kind: "room",
+		IncludeClosed: true, Limit: 1, Filters: []*pb.Filter{{Attr: "$unique_key", Op: "eq", IsString: true, StringValue: game}}})
+	if err != nil {
+		return nil, err
+	}
+	if len(res.GetSessions()) == 0 {
+		return nil, status.Error(codes.NotFound, "no such bridged room")
+	}
+	return res.GetSessions()[0], nil
+}
+
+// EndBridged ends the room of a bridged game: its owner leaves, and a room without owner migration ends with its owner. A room that is
+// already gone is not an error.
+func (m *MatchmakingCore) EndBridged(ctx context.Context, title, game string) error {
+	s, err := m.findBridged(ctx, title, game)
+	if status.Code(err) == codes.NotFound {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	_, err = m.C.LeaveSession(m.ctx(ctx), &pb.LeaveSessionRequest{SessionId: s.GetId(), AccountId: s.GetOwnerId(), Reason: "leave"})
 	return err
 }

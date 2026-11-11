@@ -1,5 +1,19 @@
 # Changelog
 
+## v0.2.22
+
+Bridge routes for Minecraft cross-play (prds#177, common/minecraft docs/session-mapping.md), on the HTTP listener, bearer `NP_BRIDGE_KEY` (the routes are off
+without it):
+
+- `GET /internal/bridge/rooms`: the Minecraft rooms real PS3s host (id, room id, owner account, slots, the 184-byte session data), bridged rooms left out.
+- `PUT/DELETE /internal/bridge/rooms/{game}`: a bridged room kept for a player hosting on another console, who is not connected here: created under
+  the host's account with the game id as the core session's unique key, the golden attribute shapes of a real host (0x55 + 0x56, 0x57 + 0x58, the
+  host's 0x59), no owner migration, renewed by every PUT (the core reaps it 300 s after the last one). It has no room key and no console connection,
+  so a real console on the same account does not see it. The net version must be 0x0884.
+- `GET /internal/bridge/joins?after=N`: every JoinRoom on a bridged room with the joiner, the member data, the endpoint and the whole request
+  (secrets redacted); logged in full as `matching2 bridged join`. The reply is the normal JoinRoom reply.
+- A room search returns the new core attribute `bridge` on bridged rooms (`RoomInfo.Bridge`).
+
 ## v0.2.21
 
 Minecraft: PlayStation 3 Edition (NPEB01899 01.84, NP communication id NPWR05636_00) can host (prds#177, prds#163; research minecraft-lce/ps3-0184-vs-wiiu-2026-11-10.md, ps3/matching2-protocol.md §35). Terraria's create and join replies are byte-identical (`wire.TestCreateJoinReplyGolden` unchanged).
