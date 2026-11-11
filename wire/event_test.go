@@ -97,6 +97,20 @@ func TestRoomEventsGolden(t *testing.T) {
 	if binary.BigEndian.Uint16(el[0x16]) != 0x30 || len(el[0x0b]) != 24 || !bytes.Equal(el[0x62], []byte{CauseLeave}) {
 		t.Fatalf("left elements %x", left[32:])
 	}
+
+	// §38: the event's 0x4b goes through the same member parser as the create reply's (vsh 0x2c36dc and 0x2c3910 both call 0x2c3580 with
+	// flag 1), and the console accepted that one (it went on to 0x1202 on live 8). So for the same member the two must be byte-identical.
+	mi := MemberInfo{No: 3, Name: "SwitchTest", Country: "gb", Addr: []byte{10, 87, 0, 2}, NAT: 1}
+	cr := Reply(sess, 0x3200, 0, [4]byte{}, CreateJoinRoomReply(1, RoomData{WorldID: 1, MaxSlot: 8}, mi, tok, tok)...)
+	if !bytes.Equal(mustElems(t, cr)[0x4b], m) {
+		t.Fatalf("event member differs from the create-reply member:\n%x\n%x", m, mustElems(t, cr)[0x4b])
+	}
+	// The console's own room request on live 8 (0x320a, 14:46:27.380) carries the same room handle and its member id where the event
+	// header has them: +12 = 0x0001 (room+10), +14 = 0x0010 (its member id).
+	live8 := []byte{0x11, 0x01, 0x00, 0x81, 0x32, 0x0a, 0x01, 0x00, 0x41, 0x70, 0x00, 0x10, 0x00, 0x01, 0x00, 0x10}
+	if binary.BigEndian.Uint16(live8[12:]) != head || binary.BigEndian.Uint16(live8[14:]) != MemberID(1) {
+		t.Fatalf("room handle %x / own member id do not match the console's own 0x320a header", head)
+	}
 }
 
 func mustElems(t *testing.T, pkt []byte) map[uint16][]byte {

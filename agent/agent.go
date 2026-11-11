@@ -100,8 +100,14 @@ type Agent struct {
 	// HeartbeatEvery is how often RunHeartbeats refreshes the room members of every console with a live login (default 30 s).
 	HeartbeatEvery time.Duration
 
+	// EventExperiment walks the unproven MemberJoined variants on a join (experiment.go, NP_MATCHING_EVENT_EXPERIMENT=1). Off by default.
+	EventExperiment bool
+	exp             experimentState
+
 	msgMu    sync.Mutex
 	msgConns map[string]*conn // account -> a plain connection room events/messages can be pushed on
+	allConns map[*conn]string // every plain logged-in connection -> its account (the experiment tries each)
+	connSeq  atomic.Uint64    // conn.id source
 }
 
 // registerConn remembers a plain logged-in connection as a push target for its account (room messages, §24);
@@ -114,13 +120,16 @@ func (a *Agent) registerConn(st *conn) {
 	defer a.msgMu.Unlock()
 	if a.msgConns == nil {
 		a.msgConns = map[string]*conn{}
+		a.allConns = map[*conn]string{}
 	}
 	a.msgConns[st.sess.Account] = st
+	a.allConns[st] = st.sess.Account
 }
 
 func (a *Agent) unregisterConn(st *conn) {
 	a.msgMu.Lock()
 	defer a.msgMu.Unlock()
+	delete(a.allConns, st)
 	for account, c := range a.msgConns {
 		if c == st {
 			delete(a.msgConns, account)
@@ -237,6 +246,9 @@ func (a *Agent) log() *slog.Logger {
 }
 
 type conn struct {
+	id       uint64 // per process, logged and recorded so requests and pushed events map to TCP connections
+	opened   time.Time
+	lastRoom atomic.Int64 // unix ns of the last 0x32xx request on this connection
 	comm     string
 	sess     *Session
 	room     string        // core session id of the room this connection created, joined or named by a room-key MAC
@@ -268,9 +280,14 @@ func (a *Agent) ServeTLS(c net.Conn) { a.serve(c, true) }
 
 func (a *Agent) serve(c net.Conn, secure bool) {
 	defer c.Close()
-	st := &conn{stop: make(chan struct{}), w: c, secure: secure}
+	st := &conn{id: a.connSeq.Add(1), opened: time.Now(), stop: make(chan struct{}), w: c, secure: secure}
 	defer close(st.stop)
 	defer a.unregisterConn(st)
+	defer func() {
+		if st.sess != nil && !secure {
+			a.log().Info("matching2 conn closed", "conn", st.id, "account", st.sess.Account, "remote", c.RemoteAddr().String(), "age", time.Since(st.opened).Round(time.Millisecond).String())
+		}
+	}()
 	buf := make([]byte, 0x6000)
 	for {
 		c.SetReadDeadline(time.Now().Add(60 * time.Second))
@@ -333,7 +350,8 @@ func (a *Agent) handle(ctx context.Context, st *conn, f *wire.Frame) []byte {
 		if st.sess != nil {
 			acct = st.sess.Account
 		}
-		a.Capture.Record(f.Cmd, st.comm, acct, f.Redacted(), out)
+		a.Capture.Record(f.Cmd, st.comm, acct, st.id, f.Redacted(), out)
+		a.expSaw(acct, st.id, f.Cmd)
 		a.Stats.Observe(f.Cmd, out != nil, time.Since(start))
 	}
 	return out
@@ -351,7 +369,7 @@ func (a *Agent) handle0(ctx context.Context, st *conn, f *wire.Frame) []byte {
 		// The room-server connection (0x2001 onwards) carries no communication id: find the title and login by the request's session MAC.
 		a.resolveSession(ctx, st, f)
 	}
-	log := a.log().With("cmd", f.Cmd, "title", st.comm)
+	log := a.log().With("cmd", f.Cmd, "title", st.comm, "conn", st.id)
 	t, ok := a.Titles[st.comm]
 	if !ok {
 		log.Info("matching2 unknown title")
@@ -383,6 +401,9 @@ func (a *Agent) handle0(ctx context.Context, st *conn, f *wire.Frame) []byte {
 	}
 	// Room requests other than create/join (0x3202 leave, ...) are MAC'd with the member's room key, not the session key.
 	st.roomKey = nil
+	if f.Cmd>>8 == 0x32 {
+		st.lastRoom.Store(time.Now().UnixNano())
+	}
 	if f.Cmd>>8 == 0x32 && f.Cmd != 0x3200 && f.Cmd != 0x3201 {
 		if a.resolveRoomKey(ctx, st, f) {
 			log = log.With("account", st.sess.Account)
@@ -941,12 +962,17 @@ func (a *Agent) pushEvent(ctx context.Context, st *conn, account, online string,
 			continue
 		}
 		mi := wire.MemberInfo{No: m.No, Name: a.onlineID(ctx, m.Account), Country: a.country(ctx, m.Account), Addr: m.Addr, NAT: m.NAT, Owner: m.Owner}
+		if a.EventExperiment {
+			a.runExperiment(ctx, st, account, ev.Session, key, mi)
+			return
+		}
 		pkt := wire.Event(key, wire.EventMemberJoined, wire.MemberID(m.No), wire.MemberOf(mi))
 		if err := st.write(pkt); err != nil {
 			log.Warn("matching2 event write", "err", err)
 			return
 		}
-		log.Info("matching2 event sent", "code", fmt.Sprintf("0x%04x", wire.EventMemberJoined), "member", m.No, "endpoint", len(m.Addr) == 4)
+		a.Capture.Event(st.id, account, wire.EventMemberJoined, "", pkt)
+		log.Info("matching2 event sent", "code", fmt.Sprintf("0x%04x", wire.EventMemberJoined), "member", m.No, "endpoint", len(m.Addr) == 4, "conn", st.id)
 		return
 	}
 }

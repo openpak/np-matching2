@@ -57,5 +57,6 @@ func (a *Agent) pushLeft(ctx context.Context, st *conn, account string, ev RoomE
 		log.Warn("matching2 event write", "err", err)
 		return
 	}
-	log.Info("matching2 event sent", "code", fmt.Sprintf("0x%04x", code), "member", ev.MemberNo, "cause", cause)
+	a.Capture.Event(st.id, account, code, "", pkt)
+	log.Info("matching2 event sent", "code", fmt.Sprintf("0x%04x", code), "member", ev.MemberNo, "cause", cause, "conn", st.id)
 }

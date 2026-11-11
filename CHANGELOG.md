@@ -1,5 +1,23 @@
 # Changelog
 
+## v0.2.24
+
+MemberJoined diagnosis for the next hardware run (prds#145; research ps3/matching2-protocol.md §38). Live run 8 on v0.2.23: the PS3 host still
+ignored the 0x320c. A static re-check of vsh 4.93 found no byte mismatch (receive path, MAC, room handle, member parser, listener dispatch and the
+Terraria callback filter all accept our event), so this release makes the next run decisive instead of guessing a fix.
+
+- **Connection ids.** Every agent connection gets a per-process id. It is in every request log line (`conn`), in `matching2 event sent`, in a new
+  `matching2 conn closed` line (account, remote, age) and in every recorder line.
+- **Recorder records pushed events.** With `NP_CAPTURE_DIR`, each pushed 0x32xx packet is a line with `pushed: true`, the event code, the
+  connection id and the full packet (no secrets in it: a room-key MAC, member ids and NpIds).
+- **`NP_MATCHING_EVENT_EXPERIMENT=1`** (off by default, needs `NP_MATCHING_ROOM_EVENTS=1`): on a join, the host gets the MemberJoined in every
+  unproven variant, 5 s apart: the plain event on the room connection, the same bytes on each other open connection of the host (latest room
+  request first), a member element without 0x59/0x6e, and the event with the optional 0x3a room id. A MemberLeft on the previous connection
+  goes before each next variant, so an accepted variant does not make the next one a duplicate. Each attempt logs `matching2 experiment`
+  (n, variant, conn). The first non-polling request from the host logs `matching2 experiment: host request` and stops the run. Remove after use.
+- `wire.TestRoomEventsGolden` also pins that the event member element equals the create-reply member (same vsh parser 0x2c3580) and that the room
+  handle and member id match the console's own live-8 0x320a header.
+
 ## v0.2.23
 
 Room events go out the way the firmware takes them (prds#145; research ps3/matching2-protocol.md §37, static decode of vsh 4.93).
