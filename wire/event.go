@@ -10,11 +10,11 @@ import (
 // (vsh 0x2c8968 raises 0x1101 MemberJoined, 0x2c7978 0x1102/0x1103 MemberLeft/KickedOut, 0x2c7530 0x1105 OwnerChanged,
 // 0x2c8124 0x1106/0x1108 room data / signaling option, 0x2c85ac 0x1107 member data, 0x2c8e54 0x2101 room message).
 const (
-	EventMemberJoined   = 0x320c // schema: 0x4b (the new member), 0x3a?, 0x47?, 0x28?
+	EventMemberJoined   = 0x320c // schema (vsh 0x689410): 0x4b (the new member), 0x3a?, 0x47?, 0x28?; handler 0x2c8968
 	EventMemberLeft     = 0x320f // schema (vsh 0x689380): 0x16, 0x0b, 0x62, 0x3a?, 0x28?, 0x47?; handler 0x2c7978
 	EventMemberUpdated  = 0x320d // schema: 0x16, 0x06?, 0x1c?, 0x13?, 0x59?, 0x6e?
 	EventRoomUpdated    = 0x320e
-	EventOwnerChanged   = 0x3212
+	EventOwnerChanged   = 0x3212          // schema (vsh 0x689350): 0x16, 0x0b, 0x62, 0x3a?, 0x46?, 0x28?; handler 0x2c7530
 	EventRoomDestroyed  = 0x3213          // schema (vsh 0x689338): 0x62, 0x3a?, 0x28?; handler 0x2c7494 tears the room down and raises 0x1104
 	EventRoomMessage    = 0x3209          // ROOM_MSG_EVENT_ChatMessage (0x2101): 0x16 source member, 0x44?, 0x1a chat, 0x64?, 0x75
 	EventRoomBinary     = 0x320b          // ROOM_MSG_EVENT_Message (0x2102): 0x16 source member, 0x44?, 0x1b message, 0x64? (§24; not signaling)
@@ -42,6 +42,33 @@ func Event(key []byte, code, member uint16, elems ...[]byte) []byte {
 	return b
 }
 
+// Owner follow-ups. 0x3a is optional in MemberJoined, MemberLeft, OwnerChanged and UpdatedRoomDataInternal and never decides whether the
+// event is accepted: each handler raises its API event to the game first (vsh 0x2c8c24 for 0x320c) and only then, when 0x3a is present and
+// the receiver is the room owner (room+0xa8 == room+0xac), copies the 0x3a value (up to 0x204 bytes) into an internal request
+// (0x289404) that echoes it back as the request's only element: 0x320c -> 0x1203 (request type 0x1a), 0x320f/0x3212 -> 0x1204 (0x1b),
+// 0x320e -> 0x120a (0x1c). Internal requests of types 0x1a-0x1c never call the game back (0x290f48), so the follow-up is our only
+// proof on hardware that an event got through. We send the u64 room id, as in the 0x3200/0x3201 replies.
+func roomIDElem(roomID uint64) []byte {
+	return TLV(0x3a, 2, binary.BigEndian.AppendUint64(nil, roomID))
+}
+
+// Request types of the owner follow-ups, bits 20-27 of the request id (vsh 0x2b466c builds it as caller<<28 | type<<20 | sequence).
+// The 0x1203 a joiner sends as the last step of its own JoinRoom is type 0x0a and must succeed.
+const (
+	ReqTypeMemberJoinedNotice = 0x1a // 0x1203 after a MemberJoined
+	ReqTypeMemberLeftNotice   = 0x1b // 0x1204 after a MemberLeft / OwnerChanged
+	ReqTypeRoomDataNotice     = 0x1c // 0x120a after an UpdatedRoomDataInternal
+)
+
+// ReqType is the request type of a request id.
+func ReqType(reqID [4]byte) byte { return byte(binary.BigEndian.Uint32(reqID[:]) >> 20) }
+
+// MemberJoined is the kind-4 MemberJoined event (0x320c) for member mi of room roomID. The handler (vsh 0x2c8968) finds the room by +12,
+// requires the id at +14 to be absent and its slot free, builds the member from 0x4b and raises 0x1101; the owner then sends 0x1203.
+func MemberJoined(key []byte, roomID uint64, mi MemberInfo) []byte {
+	return Event(key, EventMemberJoined, MemberID(mi.No), MemberOf(mi), roomIDElem(roomID))
+}
+
 // Event causes: element 0x62, a u8 (vsh element table: size 1, type 3), the SDK's SCE_NP_MATCHING2_EVENT_CAUSE_* values.
 const (
 	CauseLeave             = 1
@@ -53,12 +80,22 @@ const (
 // (0x2c79fc) and the member named by 0x16 (0x2c7a1c): both must be in the receiver's member table or the event is dropped. The 0x16 member
 // is the one removed; when it is the receiver itself (room+0xa8) the event becomes KickedOut (0x1103) and the room is closed, otherwise
 // MemberLeft (0x1102). npid is the leaver's 24-byte NpId (NpID), cause the 0x62 u8.
-func MemberLeft(key []byte, memberID uint16, npid []byte, cause byte) []byte {
-	return Event(key, EventMemberLeft, memberID, TLV(0x16, 4, binary.BigEndian.AppendUint16(nil, memberID)), TLV(0x0b, 0, npid), TLV(0x62, 3, []byte{cause}))
+// MemberLeft (0x2c7c30) then sends the owner's 0x1204 with the 0x3a room id.
+func MemberLeft(key []byte, roomID uint64, memberID uint16, npid []byte, cause byte) []byte {
+	return Event(key, EventMemberLeft, memberID, TLV(0x16, 4, binary.BigEndian.AppendUint16(nil, memberID)), TLV(0x0b, 0, npid), TLV(0x62, 3, []byte{cause}), roomIDElem(roomID))
+}
+
+// OwnerChanged is the kind-4 RoomOwnerChanged event (0x3212). The handler (vsh 0x2c7530) finds the room by +12, requires the member at
+// +14 and the one named by 0x16 to exist, and is the only place that moves the owner pointer (room+0xac = the 0x16 member, asm 0x2c75fc)
+// before it raises 0x1105. MemberLeft only clears the leaver's slot (0x29ea94), so a migrated room must get this event before the old
+// owner's MemberLeft, or every PS3 member keeps an owner pointer to the freed member (the game reads memberList.owner unchecked, §34).
+// newOwner is the new owner's wire id (also at +14), npid its NpId; the new owner then sends 0x1204 with the 0x3a room id.
+func OwnerChanged(key []byte, roomID uint64, newOwner uint16, npid []byte, cause byte) []byte {
+	return Event(key, EventOwnerChanged, newOwner, TLV(0x16, 4, binary.BigEndian.AppendUint16(nil, newOwner)), TLV(0x0b, 0, npid), TLV(0x62, 3, []byte{cause}), roomIDElem(roomID))
 }
 
 // RoomDestroyed is the kind-4 RoomDestroyed event (0x3213): the handler (vsh 0x2c7494) finds the room by +12 and tears it down with the
-// 0x62 cause (0x29d29c raises 0x1104). No member is looked up, so +14 is 0.
+// 0x62 cause (0x29d29c raises 0x1104). No member is looked up, so +14 is 0. It has no owner follow-up, so no 0x3a.
 func RoomDestroyed(key []byte, cause byte) []byte {
 	return Event(key, EventRoomDestroyed, 0, TLV(0x62, 3, []byte{cause}))
 }

@@ -93,20 +93,15 @@ type Agent struct {
 	// such a room is answered with ROOM_FULL and counted until the cross-network relay exists.
 	CrossNetworks []string
 	// RoomEvents turns on the push of room events (MemberJoined, kind 4) to the members' open connections (NP_MATCHING_ROOM_EVENTS=1).
-	// Off by default: the event header layout is inferred from the firmware and not yet seen accepted by a console.
+	// Off by default. A real PS3 host accepted MemberJoined on 2026-11-11 (its 0x1203 follow-up, research matching2-protocol §39).
 	RoomEvents bool
 	// CrossJoinsRefused counts cross-network joins answered with an error since start (the visible gap until the relay).
 	CrossJoinsRefused atomic.Int64
 	// HeartbeatEvery is how often RunHeartbeats refreshes the room members of every console with a live login (default 30 s).
 	HeartbeatEvery time.Duration
 
-	// EventExperiment walks the unproven MemberJoined variants on a join (experiment.go, NP_MATCHING_EVENT_EXPERIMENT=1). Off by default.
-	EventExperiment bool
-	exp             experimentState
-
 	msgMu    sync.Mutex
 	msgConns map[string]*conn // account -> a plain connection room events/messages can be pushed on
-	allConns map[*conn]string // every plain logged-in connection -> its account (the experiment tries each)
 	connSeq  atomic.Uint64    // conn.id source
 }
 
@@ -120,16 +115,13 @@ func (a *Agent) registerConn(st *conn) {
 	defer a.msgMu.Unlock()
 	if a.msgConns == nil {
 		a.msgConns = map[string]*conn{}
-		a.allConns = map[*conn]string{}
 	}
 	a.msgConns[st.sess.Account] = st
-	a.allConns[st] = st.sess.Account
 }
 
 func (a *Agent) unregisterConn(st *conn) {
 	a.msgMu.Lock()
 	defer a.msgMu.Unlock()
-	delete(a.allConns, st)
 	for account, c := range a.msgConns {
 		if c == st {
 			delete(a.msgConns, account)
@@ -192,6 +184,11 @@ func (a *Agent) HeartbeatActive(ctx context.Context) int {
 // the low byte of the server error, inferred): the closest error the game already shows a player as "could not join".
 const errRoomFull = 0x19
 
+// errAlreadyJoined is SCE_NP_MATCHING2_SERVER_ERROR_ALREADY_JOINED (0x80022b30): the answer that ends the owner's 0x1203 follow-up. The
+// member is already in the room (its own JoinRoom did it); any non-zero result other than 0x0e (NO_SUCH_CONTEXT, which tears the context
+// down, vsh 0x2b37a0) ends it the same way, so the exact code only matters for the log.
+const errAlreadyJoined = 0x30
+
 // networks is the list of networks whose rooms this agent lists: np first, then the cross-network ones.
 func (a *Agent) networks() []string { return append([]string{"np"}, a.CrossNetworks...) }
 
@@ -248,7 +245,6 @@ func (a *Agent) log() *slog.Logger {
 type conn struct {
 	id       uint64 // per process, logged and recorded so requests and pushed events map to TCP connections
 	opened   time.Time
-	lastRoom atomic.Int64 // unix ns of the last 0x32xx request on this connection
 	comm     string
 	sess     *Session
 	room     string        // core session id of the room this connection created, joined or named by a room-key MAC
@@ -263,6 +259,7 @@ type conn struct {
 	// event only on that connection: the MAC key is looked up by the receiving connection (0x2b4bd8 -> 0x29ba04 compares room+0xa08), any
 	// other connection drops it with 0x80022335.
 	pushRoom string
+	owner    uint32 // member number of that room's owner as this console last learned it (create, join reply, OwnerChanged)
 }
 
 func (st *conn) write(b []byte) error {
@@ -351,7 +348,6 @@ func (a *Agent) handle(ctx context.Context, st *conn, f *wire.Frame) []byte {
 			acct = st.sess.Account
 		}
 		a.Capture.Record(f.Cmd, st.comm, acct, st.id, f.Redacted(), out)
-		a.expSaw(acct, st.id, f.Cmd)
 		a.Stats.Observe(f.Cmd, out != nil, time.Since(start))
 	}
 	return out
@@ -401,9 +397,6 @@ func (a *Agent) handle0(ctx context.Context, st *conn, f *wire.Frame) []byte {
 	}
 	// Room requests other than create/join (0x3202 leave, ...) are MAC'd with the member's room key, not the session key.
 	st.roomKey = nil
-	if f.Cmd>>8 == 0x32 {
-		st.lastRoom.Store(time.Now().UnixNano())
-	}
 	if f.Cmd>>8 == 0x32 && f.Cmd != 0x3200 && f.Cmd != 0x3201 {
 		if a.resolveRoomKey(ctx, st, f) {
 			log = log.With("account", st.sess.Account)
@@ -467,10 +460,19 @@ func (a *Agent) handle0(ctx context.Context, st *conn, f *wire.Frame) []byte {
 	case wire.CmdSendRoomChatMessage, wire.CmdSendRoomMessage:
 		// Room messages are room-key MAC'd from a console; a session-key one (the test client) is answered here.
 		return a.roomRequest(ctx, log, st, f)
-	case 0x1005, 0x1203, 0x1204:
-		// DeleteServerContext (header only), the world-side step of JoinRoom (0x3a room id) and of LeaveRoom (0x3a): the room itself is
-		// created, joined and left by the 0x32xx commands, so these only need an empty answer (their reply schemas have no required element).
-		log.Info("matching2 command answered", "bytes", len(f.Raw))
+	case 0x1005, 0x1203, 0x1204, 0x120a:
+		// DeleteServerContext (header only); 0x1203/0x1204 = the last step of JoinRoom / LeaveRoom (request types 0x0a/0x0b, 0x3a = the
+		// room id from our reply) and the owner's follow-ups to MemberJoined / MemberLeft / UpdatedRoomDataInternal (types 0x1a-0x1c, 0x3a =
+		// the value our event carried; wire.ReqType). Their reply parsers read nothing (vsh 0x2bc5c4, 0x2bc5cc, 0x2bc5e4) and the dones
+		// complete the request (state 0x3e), except the 0x1203 done for type 0x1a (0x299364): it returns without completing, so a success
+		// makes the owner rebuild and resend it until its 30 s timeout (live 2026-11-11: 223 and 234 resends). A non-zero result ends it
+		// at once and silently (0x2b4f40 -> 0x29137c: types 0x1a-0x1c have no game callback, 0x290f48). It is the proof that the host's
+		// game got the 0x1101 for that member (the handler raises it before it sends the follow-up, vsh 0x2c8c24).
+		if f.Cmd == 0x1203 && wire.ReqType(f.ReqID) == wire.ReqTypeMemberJoinedNotice {
+			log.Info("matching2 host acknowledged member join", "room", hex.EncodeToString(f.Elements()[0x3a]))
+			return wire.Reply(st.sess.Key, f.Cmd, errAlreadyJoined, f.ReqID)
+		}
+		log.Info("matching2 command answered", "type", fmt.Sprintf("0x%02x", wire.ReqType(f.ReqID)), "bytes", len(f.Raw))
 		return wire.Reply(st.sess.Key, f.Cmd, 0, f.ReqID)
 	case 0x1207:
 		return a.setExternal(ctx, log, st, f)
@@ -585,6 +587,7 @@ func (a *Agent) createRoom(ctx context.Context, log *slog.Logger, t Title, st *c
 	}
 	st.room = room.ID
 	st.setPushRoom(room.ID)
+	st.setOwner(room.MemberNo)
 	a.keepAlive(st)
 	addr, nat := a.publishEndpoint(ctx, log, room.ID, st.sess.Account, f)
 	tok, err := a.newRoomKey(ctx, room.ID, st.sess)
@@ -697,6 +700,11 @@ func (a *Agent) joinRoom(ctx context.Context, log *slog.Logger, t Title, st *con
 		members = append(members, mi)
 	}
 	markOwner(members)
+	for _, m := range members {
+		if m.Owner {
+			st.setOwner(m.No)
+		}
+	}
 	rd := roomData(j.Attrs, uint16(j.Max), wire.MemberID(ownerNo(members)))
 	els := wire.JoinRoomReply(j.MemberNo, j.RoomID, rd, members, tok, tok)
 	return wire.Reply(st.sess.Key, f.Cmd, 0, f.ReqID, els...)
@@ -915,6 +923,9 @@ func (a *Agent) pushEvent(ctx context.Context, st *conn, account, online string,
 	case "member_left", "session_ended":
 		a.pushLeft(ctx, st, account, ev)
 		return
+	case "owner_changed":
+		a.pushOwner(ctx, st, account, ev.Session, 0)
+		return
 	case "session_updated":
 		a.pushRoomData(ctx, st, account, ev)
 		return
@@ -962,11 +973,7 @@ func (a *Agent) pushEvent(ctx context.Context, st *conn, account, online string,
 			continue
 		}
 		mi := wire.MemberInfo{No: m.No, Name: a.onlineID(ctx, m.Account), Country: a.country(ctx, m.Account), Addr: m.Addr, NAT: m.NAT, Owner: m.Owner}
-		if a.EventExperiment {
-			a.runExperiment(ctx, st, account, ev.Session, key, mi)
-			return
-		}
-		pkt := wire.Event(key, wire.EventMemberJoined, wire.MemberID(m.No), wire.MemberOf(mi))
+		pkt := wire.MemberJoined(key, roomIDOf(ev.Session), mi)
 		if err := st.write(pkt); err != nil {
 			log.Warn("matching2 event write", "err", err)
 			return

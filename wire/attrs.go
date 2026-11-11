@@ -130,9 +130,10 @@ func (f *Frame) SearchFilters() []SearchFilter {
 }
 
 // RoomDataUpdated is the kind-4 UpdatedRoomDataInternal event (0x320e; vsh handler 0x2c8124 raises 0x1106 when the header u32 at +8 is 0):
-// the two internal bin attrs as they now stand. lastMember is the wire id of the member that wrote them.
-func RoomDataUpdated(key []byte, lastMember uint16, a1, a2 []byte) []byte {
-	return Event(key, EventRoomUpdated, lastMember, internalAttr(AttrInt1, lastMember, a1), internalAttr(AttrInt2, lastMember, a2))
+// the two internal bin attrs as they now stand, and the 0x3a room id (the owner answers with 0x120a, vsh 0x2c8528). lastMember is the wire
+// id of the member that wrote them.
+func RoomDataUpdated(key []byte, roomID uint64, lastMember uint16, a1, a2 []byte) []byte {
+	return Event(key, EventRoomUpdated, lastMember, roomIDElem(roomID), internalAttr(AttrInt1, lastMember, a1), internalAttr(AttrInt2, lastMember, a2))
 }
 
 // MemberDataUpdated is the kind-4 UpdatedRoomMemberDataInternal event (0x320d; handler 0x2c85ac raises 0x1107): the member's id and its 0x59.

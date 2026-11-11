@@ -48,7 +48,9 @@ func TestEventHeader(t *testing.T) {
 // TestRoomEventsGolden pins the room events byte for byte and replays what the firmware does with them (research matching2-protocol §37):
 // the room key is the AES-128-ECB decryption of the 0x24 token with the session key (vsh 0x29cb6c -> 0x2903a8; the 0x21 token is only copied),
 // the event MAC verifies with it (0x2b4bd8), +12 equals the room data head the create reply gave (room+10, 0x29bae0), +14 is the subject in
-// slot form (0x29ef9c), never slot 0 (the owner alias, 0x29ec18). Changing these bytes must be deliberate.
+// slot form (0x29ef9c), never slot 0 (the owner alias, 0x29ec18). MemberJoined and MemberLeft end with the 0x3a room id of the create reply:
+// a real PS3 host answered exactly that MemberJoined (0x4b, then 0x3a = room id) with its 0x1203 follow-up 48-117 ms later on 2026-11-11
+// (§39), which it only sends after raising 0x1101 to the game. Changing these bytes must be deliberate.
 func TestRoomEventsGolden(t *testing.T) {
 	sess := []byte("session-key-16by-xyz")
 	roomKey := []byte("room-key-16bytes")
@@ -65,17 +67,20 @@ func TestRoomEventsGolden(t *testing.T) {
 	}
 	head := binary.BigEndian.Uint16(cf.Elements()[0x71])
 
-	joined := Event(roomKey, EventMemberJoined, MemberID(3), MemberOf(MemberInfo{No: 3, Name: "SwitchTest", Country: "gb", Addr: []byte{10, 87, 0, 2}, NAT: 1}))
-	left := MemberLeft(roomKey, MemberID(3), NpID("SwitchTest", "gb"), CauseLeave)
+	const room = 0x0001aaaabbbbcccc
+	joined := MemberJoined(roomKey, room, MemberInfo{No: 3, Name: "SwitchTest", Country: "gb", Addr: []byte{10, 87, 0, 2}, NAT: 1})
+	left := MemberLeft(roomKey, room, MemberID(3), NpID("SwitchTest", "gb"), CauseLeave)
 	gone := RoomDestroyed(roomKey, CauseLeave)
+	owner := OwnerChanged(roomKey, room, MemberID(3), NpID("SwitchTest", "gb"), CauseLeave)
 	for _, c := range []struct {
 		name    string
 		pkt     []byte
 		subject uint16
 		want    string
 	}{
-		{"0x320c", joined, 0x30, "110400a0320c00000000000000010030d5967ca4ef7133c1fea658ae55e7b541004b007c00300000000000000000000000000100000b0018537769746368546573740000000000006762676270733300100c0030537769746368546573740000000000000000000000000000000000000000000000000000000000000000000000000000100d00000059000c000000000000000020010000206e00040a570002"},
-		{"0x320f", left, 0x30, "11040047320f00000000000000010030eefc05e210ac642c8db680ead10d4e2e401600020030000b00185377697463685465737400000000000067626762707333003062000101"},
+		{"0x320c", joined, 0x30, "110400ac320c000000000000000100306d816f821c1f4dec91c7ab34db37c160004b007c00300000000000000000000000000100000b0018537769746368546573740000000000006762676270733300100c0030537769746368546573740000000000000000000000000000000000000000000000000000000000000000000000000000100d00000059000c000000000000000020010000206e00040a570002203a00080001aaaabbbbcccc"},
+		{"0x320f", left, 0x30, "11040053320f000000000000000100308c9d376ae742f7ed4143c739caffea20401600020030000b00185377697463685465737400000000000067626762707333003062000101203a00080001aaaabbbbcccc"},
+		{"0x3212", owner, 0x30, "110400533212000000000000000100301b7892d45faae5f22e66cb0604dbc733401600020030000b00185377697463685465737400000000000067626762707333003062000101203a00080001aaaabbbbcccc"},
 		{"0x3213", gone, 0, "110400253213000000000000000100002525f5daaa5cff0bc75c284ad6f647a23062000101"},
 	} {
 		f, rest, err := Parse(c.pkt)
@@ -92,6 +97,16 @@ func TestRoomEventsGolden(t *testing.T) {
 	m := mustElems(t, joined)[0x4b]
 	if id := binary.BigEndian.Uint16(m); id != 0x30 || id>>4 == 0 || binary.BigEndian.Uint32(m[10:]) != 0 {
 		t.Fatalf("joined member %x: id must equal +14, not slot 0, no owner flag", m[:14])
+	}
+	if r := mustElems(t, joined)[0x3a]; !bytes.Equal(r, cf.Elements()[0x3a]) || !bytes.Equal(mustElems(t, left)[0x3a], r) {
+		t.Fatalf("0x3a %x is not the create reply's room id %x", r, cf.Elements()[0x3a])
+	}
+	// The element order of the accepted live event: 0x4b first, 0x3a last (schema 0x689410 order).
+	if i, j := bytes.Index(joined, []byte{0x00, 0x4b}), bytes.Index(joined, []byte{0x20, 0x3a, 0x00, 0x08}); i != 32 || j != len(joined)-12 {
+		t.Fatalf("element order: 0x4b at %d, 0x3a at %d", i, j)
+	}
+	if el := mustElems(t, owner); binary.BigEndian.Uint16(el[0x16]) != 0x30 || len(el[0x0b]) != 24 || !bytes.Equal(el[0x62], []byte{CauseLeave}) || len(el[0x3a]) != 8 {
+		t.Fatalf("owner changed elements %x", owner[32:])
 	}
 	el := mustElems(t, left)
 	if binary.BigEndian.Uint16(el[0x16]) != 0x30 || len(el[0x0b]) != 24 || !bytes.Equal(el[0x62], []byte{CauseLeave}) {

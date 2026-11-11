@@ -275,7 +275,7 @@ func (a *Agent) pushRoomData(ctx context.Context, st *conn, account string, ev R
 	if m, ok := memberByAccount(j, ev.Subject); ok {
 		last = wire.MemberID(m.No)
 	}
-	if err := st.write(wire.RoomDataUpdated(key, last, a1, a2)); err != nil {
+	if err := st.write(wire.RoomDataUpdated(key, roomIDOf(ev.Session), last, a1, a2)); err != nil {
 		log.Warn("matching2 event write", "err", err)
 		return
 	}

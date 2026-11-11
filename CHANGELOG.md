@@ -1,5 +1,28 @@
 # Changelog
 
+## v0.2.25
+
+Room events as the PS3 takes them, from the 2026-11-11 hardware experiment and a vsh 4.93 decode (prds#145; research ps3/matching2-protocol.md §39).
+
+- **MemberJoined (0x320c) carries the 0x3a room id by default.** That form made a real PS3 host (Minecraft 01.84 and Terraria) answer with
+  request 0x1203 48-117 ms later. The 0x3a element is not what gets the event accepted. The handler (vsh 0x2c8968) raises 0x1101 to the game
+  first (0x2c8c24). Only after that, and only on the room owner, does it echo the 0x3a value back in an internal request (0x289404, type 0x1a).
+  So the 0x1203 proves the game got the join. Whether the variants without 0x3a also got through can't be seen.
+- **The owner's 0x1203 gets ALREADY_JOINED (result 0x30).** Its done (0x299364) never completes a type-0x1a request, so an empty success made
+  the host rebuild and resend it until its 30 s timeout (223 and 234 resends live). Any non-zero result except 0x0e ends it at once and
+  silently: types 0x1a-0x1c never call the game back (0x290f48). The 0x1203 at the end of a console's own JoinRoom (type 0x0a, told apart by
+  the request id, `wire.ReqType`) still gets the empty success it needs. It logs `matching2 host acknowledged member join`.
+- **MemberLeft (0x320f) and UpdatedRoomDataInternal (0x320e) carry 0x3a too.** The owner answers with 0x1204 and 0x120a. Both complete on an
+  empty reply (dones 0x299394, 0x2993c4), so each one confirms that the event was accepted. 0x120a used to go unanswered and is now answered
+  empty. RoomDestroyed has no follow-up and stays without 0x3a.
+- **OwnerChanged (0x3212) is pushed.** It carries 0x16 new owner id, 0x0b NpId, 0x62 cause and 0x3a (schema 0x689350). Its handler (0x2c7530) is
+  the only place that moves a member's owner pointer, and MemberLeft only clears the slot. In a migrating PS3 room the host's leave used to
+  leave every other PS3 with an owner pointer to a freed member, which the game reads unchecked (§34). The agent now remembers the owner each
+  connection's console knows and sends OwnerChanged before the old owner's MemberLeft (and on the core's owner_changed).
+- **The MemberJoined experiment is removed** (`agent/experiment.go`, `NP_MATCHING_EVENT_EXPERIMENT`). Connection ids and the recorder stay.
+- Golden tests: `wire.TestRoomEventsGolden` (0x320c/0x320f with 0x3a, new 0x3212), `TestAttrRepliesGolden` (0x320e), and
+  `agent.TestOwnerFollowUpsAnswered`, which uses the recorded Minecraft 0x1203 request.
+
 ## v0.2.24
 
 MemberJoined diagnosis for the next hardware run (prds#145; research ps3/matching2-protocol.md §38). Live run 8 on v0.2.23: the PS3 host still
