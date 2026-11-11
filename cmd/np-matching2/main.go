@@ -76,7 +76,10 @@ func run() error {
 		return err
 	}
 	defer conn.Close()
-	a := &agent.Agent{Rooms: mm, Titles: titles, Store: store, Tickets: signer, Account: acct, Core: mm, Log: log, RoomHost: nphttp.Env("NP_MATCHING_HOST", "matching.np.community.playstation.net"), RoomPort: 3480, RoomEvents: os.Getenv("NP_MATCHING_ROOM_EVENTS") == "1"}
+	a := &agent.Agent{Rooms: mm, Titles: titles, Store: store, Tickets: signer, Account: acct, Core: mm, Log: log, RoomHost: nphttp.Env("NP_MATCHING_HOST", "matching.np.community.playstation.net"), RoomPort: 3480, RoomEvents: os.Getenv("NP_MATCHING_ROOM_EVENTS") == "1", NoSigOpt: os.Getenv("NP_MATCHING_SIGOPT_OFF") == "1"}
+	if a.NoSigOpt {
+		log.Warn("np-matching2 signalling option off (NP_MATCHING_SIGOPT_OFF=1): rooms answer an empty 0x6d, no PS3 starts signalling")
+	}
 	// Cross-play is always on: PS3 search lists the Wii U rooms of the group. NP_MATCHING_CROSSPLAY_OFF=1 is an incident kill switch.
 	if os.Getenv("NP_MATCHING_CROSSPLAY_OFF") == "1" {
 		log.Warn("np-matching2 cross-play listing OFF (kill switch NP_MATCHING_CROSSPLAY_OFF)")

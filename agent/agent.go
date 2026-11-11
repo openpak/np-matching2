@@ -12,6 +12,7 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -95,6 +96,9 @@ type Agent struct {
 	// RoomEvents turns on the push of room events (MemberJoined, kind 4) to the members' open connections (NP_MATCHING_ROOM_EVENTS=1).
 	// Off by default. A real PS3 host accepted MemberJoined on 2026-11-11 (its 0x1203 follow-up, research matching2-protocol §39).
 	RoomEvents bool
+	// NoSigOpt returns every room's signalling option (0x6d) empty again, as before v0.2.26 (NP_MATCHING_SIGOPT_OFF=1): no PS3 then
+	// starts Matching2 signalling, but a host that still leaves its room with v0.2.27 can be told apart from the NpId fix (research §41).
+	NoSigOpt bool
 	// CrossJoinsRefused counts cross-network joins answered with an error since start (the visible gap until the relay).
 	CrossJoinsRefused atomic.Int64
 	// HeartbeatEvery is how often RunHeartbeats refreshes the room members of every console with a live login (default 30 s).
@@ -103,6 +107,11 @@ type Agent struct {
 	msgMu    sync.Mutex
 	msgConns map[string]*conn // account -> a plain connection room events/messages can be pushed on
 	connSeq  atomic.Uint64    // conn.id source
+	// npOpts holds, per account, the 8 NpId option bytes the console itself sent in its login (element 0x0b). A member's NpId must
+	// carry them exactly: vsh 0x1e4950 compares every member with the console's own NpId (sceNpUtilCmpNpId 0x1f79bc, opt[0..4] must
+	// match) and activates signalling toward each one that differs, the owner included when ours differ (research §41).
+	// ponytail: in memory, re-learned on every login; a restart serves the derived realm until the console logs in again.
+	npOpts sync.Map
 }
 
 // registerConn remembers a plain logged-in connection as a push target for its account (room messages, §24);
@@ -214,6 +223,9 @@ func (a *Agent) onlineID(ctx context.Context, account string) string {
 // country is the account country a member's NpId realm comes from: the core account's, which np-account also writes into the
 // console's ticket (so it is the realm the console signs in to RT with). Unknown accounts get wire.Country's default.
 func (a *Agent) country(ctx context.Context, account string) string {
+	if v, ok := a.npOpts.Load(account); ok {
+		return v.(string) // the console's own 8 option bytes (wire.NpID copies them verbatim)
+	}
 	if a.Account == nil || account == "" {
 		return ""
 	}
@@ -518,6 +530,18 @@ func (a *Agent) handle0(ctx context.Context, st *conn, f *wire.Frame) []byte {
 	return nil
 }
 
+// learnNpID keeps the option bytes of the NpId a console sent as its own (login element 0x0b, 24 bytes: online id 16, options 8;
+// real PS3Test 2026-11-11: "ptnpps3", while the realm derived from its account country is "ptptps3").
+func (a *Agent) learnNpID(ctx context.Context, log *slog.Logger, account, onlineID string, np []byte) {
+	if len(np) != 24 || string(wire.NpID(onlineID, "")[:16]) != string(np[:16]) {
+		return
+	}
+	opt := string(np[16:])
+	if prev, ok := a.npOpts.Swap(account, opt); !ok || prev != opt {
+		log.Info("matching2 member NpId options from the console", "account", account, "opt", strings.TrimRight(opt, "\x00"))
+	}
+}
+
 func (a *Agent) login(ctx context.Context, log *slog.Logger, t Title, f *wire.Frame, el map[uint16][]byte) []byte {
 	if subtle.ConstantTimeCompare(el[0x15], t.Pass) != 1 {
 		log.Info("matching2 login: passphrase mismatch")
@@ -537,6 +561,7 @@ func (a *Agent) login(ctx context.Context, log *slog.Logger, t Title, f *wire.Fr
 		return nil
 	}
 	log.Info("matching2 login", "account", id.AccountID, "session", s.ID)
+	a.learnNpID(ctx, log, id.AccountID, id.OnlineID, el[0x0b])
 	u32 := make([]byte, 4)
 	binary.BigEndian.PutUint32(u32, uint32(s.ID))
 	life := binary.BigEndian.AppendUint16(nil, uint16(SessionTTL/time.Second))
@@ -598,6 +623,9 @@ func (a *Agent) createRoom(ctx context.Context, log *slog.Logger, t Title, st *c
 	log.Info("matching2 room created", "session", room.ID, "max_slot", maxSlot, "bytes", len(f.Raw), "endpoint", len(addr) == 4,
 		"bins", binSizes(attrs), "ints", attrs.Int, "member_bin", len(bin))
 	rd := roomData(attrs, uint16(maxSlot), wire.MemberID(room.MemberNo))
+	if a.NoSigOpt {
+		rd.Flags = nil
+	}
 	me := wire.MemberInfo{No: room.MemberNo, Name: st.sess.OnlineID, Country: a.country(ctx, st.sess.Account), Addr: addr, NAT: nat, Owner: true, Bin: bin}
 	els := wire.CreateJoinRoomReply(room.RoomID, rd, me, tok, tok)
 	return wire.Reply(st.sess.Key, f.Cmd, 0, f.ReqID, els...)
@@ -706,6 +734,9 @@ func (a *Agent) joinRoom(ctx context.Context, log *slog.Logger, t Title, st *con
 		}
 	}
 	rd := roomData(j.Attrs, uint16(j.Max), wire.MemberID(ownerNo(members)))
+	if a.NoSigOpt {
+		rd.Flags = nil
+	}
 	els := wire.JoinRoomReply(j.MemberNo, j.RoomID, rd, members, tok, tok)
 	return wire.Reply(st.sess.Key, f.Cmd, 0, f.ReqID, els...)
 }

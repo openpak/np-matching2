@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.2.27
+
+Why a PS3 host left its Terraria room 0.7 s after creating it under v0.2.26 (prds#145; research ps3/matching2-protocol.md §41).
+
+- **Each member's NpId is the one its console uses for itself.** The console's own NpId (login and 0x3200 element 0x0b) is PS3Test +
+  `ptnpps3`; we listed the owner as PS3Test + `ptptps3`. vsh 4.93 0x1e4950 puts every member whose NpId differs from its own
+  (sceNpUtilCmpNpId 0x1f79bc: options 0..4 must match) into its signalling table, so with v0.2.26's mesh/star option the owner activated
+  signalling toward itself, and Terraria left the room. The agent now keeps the 8 option bytes from each login's 0x0b and emits them
+  wherever that account's NpId appears (member lists, search owners, member and owner events). Accounts without a login keep the derived
+  `<cc><cc>ps3`. Golden test `agent.TestMemberNpIdIsTheConsolesOwn` uses the recorded bytes.
+- `NP_MATCHING_SIGOPT_OFF=1` returns every room's 0x6d empty again (pre-v0.2.26 behaviour), as a fallback switch for hardware runs.
+
 ## v0.2.26
 
 Why no PS3 host ever started signalling toward a member (prds#145; research ps3/matching2-protocol.md §40).

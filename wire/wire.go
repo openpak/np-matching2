@@ -213,9 +213,14 @@ func Country(c string) string {
 // firmware derives from the console's RT JID (research ps3/matching2-protocol.md §30): realm labels 1 and 2, then the resource
 // "ps3". A PS3 signs in to RT as <id>@<cc>.<cc>.np.playstation.net with cc its ticket country (seen: us.us, pt.pt), so the
 // options are <cc><cc>ps3. A game activates NP signaling toward exactly this NpId; any other realm is a different peer.
+// A country of exactly 8 bytes is a console's own option bytes (learned from its login) and is copied as is.
 func NpID(onlineID, country string) []byte {
 	b := make([]byte, 24)
 	copy(b, onlineID)
+	if len(country) == 8 {
+		copy(b[16:], country)
+		return b
+	}
 	c := Country(country)
 	copy(b[16:], c+c+"ps3")
 	return b

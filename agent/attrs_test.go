@@ -167,3 +167,26 @@ func TestSignalingOptionIsEchoedInRoomData(t *testing.T) {
 		t.Fatalf("bridged room option %x", got)
 	}
 }
+
+// Real PS3Test 2026-11-11 (recorder, login and 0x3200 element 0x0b): the console's own NpId is PS3Test + "ptnpps3". The owner's member
+// entry must carry exactly these bytes, or vsh 0x1e4950 takes the owner for another member and a mesh/star room signals toward itself:
+// Terraria then left its room 0.68 s after creating it (v0.2.26, research §41).
+func TestMemberNpIdIsTheConsolesOwn(t *testing.T) {
+	own, _ := hex.DecodeString("5053335465737400000000000000000070746e7070733300")
+	a, _, st := testAgent()
+	st.sess = &Session{Account: psHost, OnlineID: "PS3Test", Key: make([]byte, 20)}
+	a.learnNpID(context.Background(), a.log(), psHost, "PS3Test", own)
+	opt, _ := hex.DecodeString("0100000000000000")
+	f := reply(t, a.createRoom(context.Background(), a.log(), Title{Key: "terraria"}, st, frame(0x3200, wire.TLV(0x3f, 4, []byte{0, 8}), wire.TLV(0x6d, 2, opt))))
+	if !bytes.Contains(f.Elements()[0x4b], own) || bytes.Contains(f.Raw, []byte("ptptps3")) {
+		t.Fatalf("create reply members do not carry the console's own NpId: %x", f.Elements()[0x4b])
+	}
+	_, _, jst := testAgent()
+	ps := wire.TLV(0x3a, 2, []byte{0, 1, 0x11, 0x11, 0x11, 0x11, 0, 0})
+	if out := a.joinRoom(context.Background(), a.log(), Title{}, jst, frame(0x3201, ps)); !bytes.Contains(out, own) {
+		t.Fatal("join reply: the host's NpId is not the one its console uses")
+	}
+	if wire.NpID("PS3Test", "")[16] != 'u' || string(wire.NpID("PS3Test", "pt")[16:23]) != "ptptps3" {
+		t.Fatal("derived realm changed for consoles that never logged in")
+	}
+}
