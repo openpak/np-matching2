@@ -1,5 +1,20 @@
 # Changelog
 
+## v0.2.23
+
+Room events go out the way the firmware takes them (prds#145; research ps3/matching2-protocol.md §37, static decode of vsh 4.93).
+
+- **Only on the room's own connection.** The console gives each room its own agent connection (opened by the 0x1209 done, reopened by the 0x2001
+  done, which then sends 0x3200/0x3201 on it) and looks up the MAC key of a 0x32xx event by the connection it arrives on (vsh 0x2b4bd8 ->
+  0x29ba04); on any other connection the event is dropped with 0x80022335. Every logged-in connection of an account used to push every event
+  (live7 pushed 0x320c twice). Now only the connection that sent the room's 0x3200/0x3201 sends its events.
+- **MemberLeft (0x320f) and RoomDestroyed (0x3213) are pushed.** Element 0x62 is a u8 event cause (vsh element table), not undecoded. MemberLeft =
+  0x16 leaver id + 0x0b leaver NpId + 0x62 (schema 0x689380, handler 0x2c7978, which needs the leaver in the receiver's member table at +14 and
+  0x16); RoomDestroyed = 0x62 (schema 0x689338, handler 0x2c7494). Cause from the core reason: leave 1, kicked 2, anything else 5. Without
+  MemberLeft a host kept the leaver's slot, and a later MemberJoined for that slot was dropped (0x800223e4 at 0x2c896c).
+- `wire.TestRoomEventsGolden` pins 0x320c, 0x320f and 0x3213 byte for byte and checks them against the console's key derivation (AES-128-ECB
+  decryption of the 0x24 token, vsh 0x2903a8) and room/member lookups.
+
 ## v0.2.22
 
 Bridge routes for Minecraft cross-play (prds#177, common/minecraft docs/session-mapping.md), on the HTTP listener, bearer `NP_BRIDGE_KEY` (the routes are off

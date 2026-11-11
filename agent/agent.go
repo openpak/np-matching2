@@ -246,6 +246,11 @@ type conn struct {
 	secure   bool
 	mu       sync.Mutex // serialises writes: replies, keepalive echoes and pushed events
 	watching bool
+	// pushRoom is the room whose events this connection carries: the one it created (0x3200) or joined (0x3201). The firmware gives each room
+	// its own type-3 connection (vsh 0x29d528, reopened by the 0x2001 done 0x29a8d4, which then sends 0x3200/0x3201 on it) and accepts a 0x32xx
+	// event only on that connection: the MAC key is looked up by the receiving connection (0x2b4bd8 -> 0x29ba04 compares room+0xa08), any
+	// other connection drops it with 0x80022335.
+	pushRoom string
 }
 
 func (st *conn) write(b []byte) error {
@@ -558,6 +563,7 @@ func (a *Agent) createRoom(ctx context.Context, log *slog.Logger, t Title, st *c
 		return nil
 	}
 	st.room = room.ID
+	st.setPushRoom(room.ID)
 	a.keepAlive(st)
 	addr, nat := a.publishEndpoint(ctx, log, room.ID, st.sess.Account, f)
 	tok, err := a.newRoomKey(ctx, room.ID, st.sess)
@@ -645,6 +651,7 @@ func (a *Agent) joinRoom(ctx context.Context, log *slog.Logger, t Title, st *con
 		return nil
 	}
 	st.room = j.ID
+	st.setPushRoom(j.ID)
 	a.keepAlive(st)
 	addr, nat := a.publishEndpoint(ctx, log, j.ID, st.sess.Account, f)
 	tok, err := a.newRoomKey(ctx, j.ID, st.sess)
@@ -875,15 +882,18 @@ func (a *Agent) watch(st *conn) {
 	}()
 }
 
-// pushEvent turns a core event for this console into a Matching2 room event: MemberJoined (0x320c), UpdatedRoomDataInternal (0x320e) and
-// UpdatedRoomMemberDataInternal (0x320d). MemberLeft, Kickedout and RoomDestroyed need the element 0x62, which is not decoded: they are only
-// logged (the member's RUDP link dies with the room anyway).
+// pushEvent turns a core event for this console into a Matching2 room event: MemberJoined (0x320c), MemberLeft (0x320f), RoomDestroyed
+// (0x3213), UpdatedRoomDataInternal (0x320e) and UpdatedRoomMemberDataInternal (0x320d). Every connection of the account watches, but only
+// the room's own connection sends (conn.pushRoom): the firmware drops the event anywhere else.
 func (a *Agent) pushEvent(ctx context.Context, st *conn, account, online string, ev RoomEvent) {
-	if ev.Subject == account || ev.Session == "" {
+	if ev.Subject == account || !st.carries(ev.Session) {
 		return
 	}
 	switch ev.Type {
 	case "member_joined":
+	case "member_left", "session_ended":
+		a.pushLeft(ctx, st, account, ev)
+		return
 	case "session_updated":
 		a.pushRoomData(ctx, st, account, ev)
 		return
@@ -891,9 +901,6 @@ func (a *Agent) pushEvent(ctx context.Context, st *conn, account, online string,
 		if ev.Text == "" { // text "endpoints" is the address publish, not a data change
 			a.pushMemberData(ctx, st, account, ev)
 		}
-		return
-	case "member_left", "session_ended":
-		a.log().Info("matching2 event not pushed (0x62 undecoded)", "type", ev.Type, "session", ev.Session, "account", account)
 		return
 	default:
 		return

@@ -11,10 +11,11 @@ import (
 // 0x2c8124 0x1106/0x1108 room data / signaling option, 0x2c85ac 0x1107 member data, 0x2c8e54 0x2101 room message).
 const (
 	EventMemberJoined   = 0x320c // schema: 0x4b (the new member), 0x3a?, 0x47?, 0x28?
-	EventMemberLeft     = 0x320f // schema: 0x16, 0x0b, 0x62, 0x3a?, 0x28?, 0x47? (0x62 not decoded: not sent yet)
+	EventMemberLeft     = 0x320f // schema (vsh 0x689380): 0x16, 0x0b, 0x62, 0x3a?, 0x28?, 0x47?; handler 0x2c7978
 	EventMemberUpdated  = 0x320d // schema: 0x16, 0x06?, 0x1c?, 0x13?, 0x59?, 0x6e?
 	EventRoomUpdated    = 0x320e
 	EventOwnerChanged   = 0x3212
+	EventRoomDestroyed  = 0x3213          // schema (vsh 0x689338): 0x62, 0x3a?, 0x28?; handler 0x2c7494 tears the room down and raises 0x1104
 	EventRoomMessage    = 0x3209          // ROOM_MSG_EVENT_ChatMessage (0x2101): 0x16 source member, 0x44?, 0x1a chat, 0x64?, 0x75
 	EventRoomBinary     = 0x320b          // ROOM_MSG_EVENT_Message (0x2102): 0x16 source member, 0x44?, 0x1b message, 0x64? (§24; not signaling)
 	EventSignalingPeers = EventRoomBinary // old name, kept for compat: 0x320b is the room Message event
@@ -24,7 +25,9 @@ const (
 // calls the handler with them, asm 0x2b52f8): code at +4, u32 at +8 (its top nibble picks one listener, 0 = all, vsh 0x2877ec), the room
 // handle at +12 (u16, compared with room+10 = head[0..2] of the room data the console got in its 0x3200/0x3201 reply, vsh 0x29bae0), the
 // subject member id at +14 (the new member of a MemberJoined, vsh 0x2c896c; the sender of a room message, vsh 0x2c8cbc), MAC at +16 keyed
-// with the receiving member's room key (room+0x3f8, vsh 0x2b4bd8). member is the wire id (MemberID).
+// with the receiving member's room key (room+0x3f8 = AES-128-ECB decryption of the reply's 0x24 token, vsh 0x29cb6c -> 0x2903a8; the 0x21
+// token is only copied to room+0x2fc). The firmware finds that key by the receiving connection (0x29ba04: room+0xa08), so an event is only
+// accepted on the connection that sent the room's 0x3200/0x3201. member is the wire id (MemberID).
 func Event(key []byte, code, member uint16, elems ...[]byte) []byte {
 	b := make([]byte, HeaderLen)
 	b[0], b[1] = 0x11, KindEvent
@@ -37,6 +40,27 @@ func Event(key []byte, code, member uint16, elems ...[]byte) []byte {
 	binary.BigEndian.PutUint16(b[2:], uint16(len(b)))
 	copy(b[16:32], Mac(key, b))
 	return b
+}
+
+// Event causes: element 0x62, a u8 (vsh element table: size 1, type 3), the SDK's SCE_NP_MATCHING2_EVENT_CAUSE_* values.
+const (
+	CauseLeave             = 1
+	CauseKickout           = 2
+	CauseMemberDisappeared = 5
+)
+
+// MemberLeft is the kind-4 MemberLeft event (0x320f). The handler (vsh 0x2c7978) finds the room by +12, then looks up the member at +14
+// (0x2c79fc) and the member named by 0x16 (0x2c7a1c): both must be in the receiver's member table or the event is dropped. The 0x16 member
+// is the one removed; when it is the receiver itself (room+0xa8) the event becomes KickedOut (0x1103) and the room is closed, otherwise
+// MemberLeft (0x1102). npid is the leaver's 24-byte NpId (NpID), cause the 0x62 u8.
+func MemberLeft(key []byte, memberID uint16, npid []byte, cause byte) []byte {
+	return Event(key, EventMemberLeft, memberID, TLV(0x16, 4, binary.BigEndian.AppendUint16(nil, memberID)), TLV(0x0b, 0, npid), TLV(0x62, 3, []byte{cause}))
+}
+
+// RoomDestroyed is the kind-4 RoomDestroyed event (0x3213): the handler (vsh 0x2c7494) finds the room by +12 and tears it down with the
+// 0x62 cause (0x29d29c raises 0x1104). No member is looked up, so +14 is 0.
+func RoomDestroyed(key []byte, cause byte) []byte {
+	return Event(key, EventRoomDestroyed, 0, TLV(0x62, 3, []byte{cause}))
 }
 
 // MemberID is the wire member id of room member number no (1-based): slot<<4, slot = no. The firmware indexes its member table by id>>4 at
