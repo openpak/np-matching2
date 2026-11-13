@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.2.30
+
+- `GET /internal/bridge/identity?account=<uuid>[&ticket=1&comm=NPWR05636_00]` (bearer NP_BRIDGE_KEY, prds#177): a player's PS3 identity (np link's
+  online id, account country, NP domain `<cc>.<cc>.np.playstation.net`) and, with `ticket=1`, a one-hour NP ticket signed as that player (the
+  same fields as `np-matching2 ticket`) and the Minecraft title's passphrase. It is what common/minecraft's bridge needs to join a PS3-hosted
+  room as the joining player of another console (RT sign-in, Matching2 login). Nothing from the response is logged. Test: online id, country
+  and domain, the ticket verifies as that account, the passphrase matches the title, no np link = 404, no bearer = 401.
+
 ## v0.2.29
 
 Why the real PS3 lost a JoinRoom right after 0x1209 (prds#177; 2026-11-13 16:32Z, PS3Test joining WiiUTest's bridged room: 0x1208 ok,

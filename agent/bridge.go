@@ -11,12 +11,16 @@ package agent
 //	                                     title, endpoint (optional 4-byte public address of the host's transport)}: answers {id, room_id}
 //	DELETE /internal/bridge/rooms/{game} ?title=NPWR05636_00 ends it
 //	GET    /internal/bridge/joins        ?after=N the JoinRoom attempts on bridged rooms, in full
+//	GET    /internal/bridge/identity     ?account=<uuid>[&ticket=1&comm=NPWR..] a player's PS3 identity: online id, country, NP domain; with ticket=1
+//	                                     also a one-hour NP ticket and the title passphrase, so the service can join a real PS3's room as that
+//	                                     player (the bridge's PS3 joiner leg: RT sign-in, Matching2 login). Never logged.
 //
 // Bearer NP_BRIDGE_KEY on all of them.
 
 import (
 	"context"
 	"crypto/subtle"
+	"encoding/base64"
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
@@ -27,6 +31,7 @@ import (
 	"sync"
 	"time"
 
+	"openpak/np-common/ticket"
 	"openpak/np-matching2/wire"
 )
 
@@ -152,10 +157,64 @@ func (a *Agent) RegisterBridge(mux *http.ServeMux) {
 	mux.HandleFunc("GET /internal/bridge/rooms", bridgeAuthed(a.bridgeList))
 	mux.HandleFunc("PUT /internal/bridge/rooms/{game}", bridgeAuthed(a.bridgePut))
 	mux.HandleFunc("DELETE /internal/bridge/rooms/{game}", bridgeAuthed(a.bridgeDelete))
+	mux.HandleFunc("GET /internal/bridge/identity", bridgeAuthed(a.bridgeIdentity))
 	mux.HandleFunc("GET /internal/bridge/joins", bridgeAuthed(func(w http.ResponseWriter, r *http.Request) {
 		after, _ := strconv.ParseInt(r.URL.Query().Get("after"), 10, 64)
 		json.NewEncoder(w).Encode(a.joins.after(after))
 	}))
+}
+
+type identityOut struct {
+	Account    string `json:"account"`
+	OnlineID   string `json:"online_id"`
+	Country    string `json:"country"`
+	Domain     string `json:"domain"`
+	Ticket     string `json:"ticket,omitempty"`     // base64
+	Comm       string `json:"comm,omitempty"`       // communication id the passphrase belongs to
+	Passphrase string `json:"passphrase,omitempty"` // 256 hex digits
+}
+
+// bridgeIdentity answers who an account is on the PS3 network (the np link's online id, the account's country) and, with ticket=1, a ticket
+// signed as that player and the Minecraft title's passphrase. It is what a real console has after sign-in; the bridge uses it to join a
+// PS3-hosted room for a player of another console. The ticket carries the same fields np-account's does.
+func (a *Agent) bridgeIdentity(w http.ResponseWriter, r *http.Request) {
+	account := r.URL.Query().Get("account")
+	if !uuidRe.MatchString(account) || a.Account == nil {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+	link, err := a.Account.GetLinkByAccount(r.Context(), account)
+	if err != nil || link.OnlineID == "" {
+		http.Error(w, "no np identity", http.StatusNotFound)
+		return
+	}
+	acc, err := a.Account.GetAccount(r.Context(), account)
+	if err != nil {
+		http.Error(w, "no account", http.StatusNotFound)
+		return
+	}
+	cc := wire.Country(acc.Country)
+	out := identityOut{Account: account, OnlineID: link.OnlineID, Country: cc, Domain: cc + "." + cc + ".np.playstation.net"}
+	if r.URL.Query().Get("ticket") == "1" {
+		t, ok := a.minecraftTitle(r.URL.Query().Get("comm"))
+		if !ok || a.Tickets == nil {
+			http.Error(w, "no minecraft title or no ticket key", http.StatusServiceUnavailable)
+			return
+		}
+		tk, err := a.Tickets.Issue(ticket.Identity{AccountID: account, LinkID: link.LinkID, OnlineID: link.OnlineID, Country: cc, Service: "IV0001-NPXS01001_00"}, time.Hour)
+		if err != nil {
+			http.Error(w, "ticket", http.StatusInternalServerError)
+			return
+		}
+		out.Ticket, out.Passphrase = base64.StdEncoding.EncodeToString(tk), hex.EncodeToString(t.Pass)
+		for id, tt := range a.Titles {
+			if tt.Key == t.Key {
+				out.Comm = id
+			}
+		}
+	}
+	a.log().Info("matching2 bridge identity", "account", account, "online", link.OnlineID, "ticket", out.Ticket != "")
+	json.NewEncoder(w).Encode(out)
 }
 
 func (a *Agent) bridgeList(w http.ResponseWriter, r *http.Request) {

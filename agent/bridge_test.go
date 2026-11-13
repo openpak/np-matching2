@@ -3,6 +3,9 @@ package agent
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"net/http"
@@ -10,6 +13,8 @@ import (
 	"strings"
 	"testing"
 
+	"openpak/np-common/coreclient"
+	"openpak/np-common/ticket"
 	"openpak/np-matching2/wire"
 )
 
@@ -145,4 +150,58 @@ func TestJoinOfABridgedRoomIsReported(t *testing.T) {
 	if n := len(a.joins.after(0)); n != 1 {
 		t.Fatalf("a real room's join was reported: %d events", n)
 	}
+}
+
+// The bridge's PS3 joiner leg asks who a player is on the PS3 network: online id, country, NP domain, and with ticket=1 a ticket that verifies
+// as that player and the Minecraft title's passphrase. Without the bearer key, or for an account without an np link, nothing is issued.
+func TestBridgeIdentity(t *testing.T) {
+	t.Setenv("NP_BRIDGE_KEY", "bk")
+	a, _, _ := testAgent()
+	const psHost = "aaaaaaaa-0000-0000-0000-0000000000a1"
+	a.Account = withLinkID{accounts{links: map[string]string{psHost: "PS3Test"}, names: map[string]string{psHost: "PS3 host"}, countries: map[string]string{psHost: "PT"}}}
+	pass := make([]byte, 128)
+	pass[0] = 0xab
+	a.Titles = map[string]Title{"NPWR05636_00": {Key: "minecraft", Compat: "lce-ps3-0884", Status: 1, Pass: pass}}
+	_, priv, _ := ed25519.GenerateKey(rand.Reader)
+	a.Tickets, _ = ticket.New(priv, nil)
+	mux := bridgeMux(a)
+
+	w := bridgeCall(mux, "GET", "/internal/bridge/identity?account="+psHost, "")
+	var out identityOut
+	if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &out) != nil || out.OnlineID != "PS3Test" || out.Country != "pt" || out.Domain != "pt.pt.np.playstation.net" || out.Ticket != "" || out.Passphrase != "" {
+		t.Fatalf("identity: %d %s", w.Code, w.Body)
+	}
+	w = bridgeCall(mux, "GET", "/internal/bridge/identity?ticket=1&account="+psHost, "")
+	out = identityOut{}
+	if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &out) != nil || out.Comm != "NPWR05636_00" || !strings.HasPrefix(out.Passphrase, "ab00") || len(out.Passphrase) != 256 {
+		t.Fatalf("identity with ticket: %d %s", w.Code, w.Body)
+	}
+	raw, err := base64.StdEncoding.DecodeString(out.Ticket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, err := a.Tickets.Verify(raw)
+	if err != nil || id.AccountID != psHost || id.OnlineID != "PS3Test" || id.Country != "pt" {
+		t.Fatalf("ticket: %+v %v", id, err)
+	}
+	if w := bridgeCall(mux, "GET", "/internal/bridge/identity?account=11111111-2222-3333-4444-555555555555", ""); w.Code != 404 {
+		t.Fatalf("an account with no np link: %d", w.Code)
+	}
+	r := httptest.NewRequest("GET", "/internal/bridge/identity?account="+psHost, nil)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, r)
+	if rec.Code != 401 {
+		t.Fatalf("no bearer key: %d", rec.Code)
+	}
+}
+
+// withLinkID gives the fake core's links an id, which a ticket needs.
+type withLinkID struct{ accounts }
+
+func (f withLinkID) GetLinkByAccount(ctx context.Context, id string) (*coreclient.Link, error) {
+	l, err := f.accounts.GetLinkByAccount(ctx, id)
+	if l != nil {
+		l.LinkID = "link-1"
+	}
+	return l, err
 }
