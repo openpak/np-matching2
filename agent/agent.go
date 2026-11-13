@@ -512,7 +512,7 @@ func (a *Agent) handle0(ctx context.Context, st *conn, f *wire.Frame) []byte {
 		if !a.Stats.Quiet("1209") {
 			log.Warn("matching2 command 0x1209 answered", "bytes", len(f.Raw), "hex", hex.EncodeToString(f.Redacted()))
 		}
-		return wire.Reply(st.sess.Key, f.Cmd, 0, f.ReqID, wire.TLV(0x3d, 4, []byte{0, 1}), wire.TLV(0x20, 2, rnd(16)), wire.ServerList(a.RoomHost, a.RoomPort))
+		return a.worldServer(log, st, f)
 	}
 	ids := make([]uint16, 0, len(el))
 	for id := range el {
@@ -1086,4 +1086,18 @@ func markOwner(ms []wire.MemberInfo) {
 	if low >= 0 {
 		ms[low].Owner = true
 	}
+}
+
+// worldServer answers 0x1209, the first step of CreateJoinRoom (request type 9: 0x29 only) and of JoinRoom (type 0x0a: 0x29, 0x2e, 0x3d =
+// bits 47..0 of the room id). Elements in the schema's order (0x3d, 0x1f, 0x20, 0x02). A host's room connection goes to the first 0x02
+// entry and then to the 0x2001 list; a joiner's goes to the single 0x1f endpoint (vsh 0x29ad94 type 0x0a), so a JoinRoom reply carries it.
+func (a *Agent) worldServer(log *slog.Logger, st *conn, f *wire.Frame) []byte {
+	els := [][]byte{wire.TLV(0x3d, 4, []byte{0, 1})}
+	if wire.ReqType(f.ReqID) == wire.ReqTypeJoinRoom {
+		el := f.Elements()
+		log.Info("matching2 join: room server handed out", "room", fmt.Sprintf("%x:%x:%x", el[0x29], el[0x2e], el[0x3d]))
+		els = append(els, wire.Server(a.RoomHost, a.RoomPort))
+	}
+	els = append(els, wire.TLV(0x20, 2, rnd(16)), wire.ServerList(a.RoomHost, a.RoomPort))
+	return wire.Reply(st.sess.Key, f.Cmd, 0, f.ReqID, els...)
 }

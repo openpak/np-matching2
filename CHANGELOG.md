@@ -1,5 +1,20 @@
 # Changelog
 
+## v0.2.29
+
+Why the real PS3 lost a JoinRoom right after 0x1209 (prds#177; 2026-11-13 16:32Z, PS3Test joining WiiUTest's bridged room: 0x1208 ok,
+0x1209 answered, 0x1005, then nothing; the game said the host had left).
+
+- **A joiner's 0x1209 reply needs element 0x1f.** JoinRoom (request type 0x0a) runs 0x1209 -> 0x3201 -> 0x1203, with no 0x2001. The
+  reply parser (vsh 0x2b81ec) stores 0x1f at req+6 for a JoinRoom, and the done (0x29ad94, type 0x0a) opens the room's type-3 connection
+  to that one endpoint, not to the 0x02 list a host uses. We never sent 0x1f, so the connection was made with an empty host name
+  (0x2b43a4 copies a zero-length string), the 0x3201 could not be sent, and the game tore its server context down (0x1005 = request type
+  3, DestroyServerContext [inferred]). The reply now carries 0x1f = u8 0, u16 0, u8 0, then 0x0a {port, 0x09 host}, the same room-server
+  endpoint, in the schema's order (0x3d, 0x1f, 0x20, 0x02). Covers a bridged room and a room hosted by a real PS3 alike; a host's
+  0x1209 reply is unchanged.
+- Golden tests from the recorded joiner and host 0x1209 frames, and the firmware's 0x3201 element set (0x3e only, no 0x29) finding the
+  room among several.
+
 ## v0.2.28
 
 Why a real PS3 joiner stopped after GetRoomDataExternalList on a Wii U-hosted game (prds#177; 2026-11-13 16:02Z, the owner's PS3Test

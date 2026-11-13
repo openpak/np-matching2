@@ -242,8 +242,19 @@ func UserInfoList(users []MemberInfo) []byte {
 // The firmware reads this list into the room request and dereferences the first entry; an empty list makes vsh fault
 // (null pointer at 0x29ae9c), which freezes the emulator.
 func ServerList(host string, port uint16) []byte {
-	item := append([]byte{byte(port >> 8), byte(port)}, TLV(0x09, 1, []byte(host))...)
-	list := []byte{0x00, 0x0a, 0, 1}
-	list = append(list, TLV(0x0a, 0, item)...)
-	return TLV(0x02, 0, list)
+	return TLV(0x02, 0, append([]byte{0x00, 0x0a, 0, 1}, serverItem(host, port)...))
+}
+
+// serverItem is one room-server endpoint: 0x0a = u16 port + TLV 0x09 (host name).
+func serverItem(host string, port uint16) []byte {
+	return TLV(0x0a, 0, append([]byte{byte(port >> 8), byte(port)}, TLV(0x09, 1, []byte(host))...))
+}
+
+// Server encodes element 0x1f: the one room server a JoinRoom connects to. The 0x1209 reply parser (vsh 0x2b81ec -> 0x2bce30, element
+// callback 0x2bd774, value parser 0x2baf5c) reads u8, u16, u8, then one 0x0a endpoint (0x2bb0e8 -> 0x2bb040: port, 0x09 host); for a
+// JoinRoom (request type 0x0a) it lands at req+6 and the 0x1209 done (0x29ad94) connects the room's type-3 connection to that host and
+// port, ignoring the 0x02 list a CreateJoinRoom uses. Without it the joiner's connection has no host and the join fails before 0x3201.
+// ponytail: the three header bytes are zero; their meaning is not decoded (the u16 becomes room+10, which a host's room keeps at 0).
+func Server(host string, port uint16) []byte {
+	return TLV(0x1f, 0, append([]byte{0, 0, 0, 0}, serverItem(host, port)...))
 }

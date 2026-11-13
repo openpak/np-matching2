@@ -55,6 +55,7 @@ func roomIDElem(roomID uint64) []byte {
 // Request types of the owner follow-ups, bits 20-27 of the request id (vsh 0x2b466c builds it as caller<<28 | type<<20 | sequence).
 // The 0x1203 a joiner sends as the last step of its own JoinRoom is type 0x0a and must succeed.
 const (
+	ReqTypeJoinRoom           = 0x0a // JoinRoom: 0x1209 (state 0xe) -> 0x3201 (0xf) -> 0x1203 (0x10); no 0x2001
 	ReqTypeMemberJoinedNotice = 0x1a // 0x1203 after a MemberJoined
 	ReqTypeMemberLeftNotice   = 0x1b // 0x1204 after a MemberLeft / OwnerChanged
 	ReqTypeRoomDataNotice     = 0x1c // 0x120a after an UpdatedRoomDataInternal
