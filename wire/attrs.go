@@ -10,6 +10,7 @@ const (
 	AttrIntLast  = 0x53
 	AttrExt1     = 0x55 // external bin attr 1 (0..256 bytes, raw in the element)
 	AttrExt2     = 0x56
+	AttrExtra    = 0x6c // the host's external info (12 bytes a real PS3 sets in its 0x1202: its public IPv4, 4 zero bytes, 0a57 0007); kept and echoed
 	AttrInt1     = 0x57 // internal bin attr 1: [u16 last-update member id][8 byte time][TLV 0x01 data], data 0..256
 	AttrInt2     = 0x58
 	AttrMember   = 0x59 // member bin attr internal 1: [8 byte time][TLV 0x01 data]
@@ -67,7 +68,7 @@ func (f *Frame) RoomAttrs() RoomAttrs {
 		switch {
 		case id >= AttrIntFirst && id <= AttrIntLast && len(v) == 4:
 			a.Int[id] = binary.BigEndian.Uint32(v)
-		case id == AttrExt1 || id == AttrExt2 || id == AttrSigOpt && len(v) > 0 && len(v) <= 64:
+		case id == AttrExt1 || id == AttrExt2 || (id == AttrSigOpt || id == AttrExtra) && len(v) > 0 && len(v) <= 64:
 			a.Bin[id] = append([]byte{}, v...)
 		case id == AttrInt1 || id == AttrInt2:
 			if len(v) >= 10 {
@@ -103,7 +104,7 @@ func (a RoomAttrs) externalItems() []byte {
 			b = append(b, TLV(id, 5, binary.BigEndian.AppendUint32(nil, v))...)
 		}
 	}
-	for _, id := range []uint16{AttrExt1, AttrExt2} {
+	for _, id := range []uint16{AttrExt1, AttrExt2, AttrExtra} {
 		if v, ok := a.Bin[id]; ok {
 			b = append(b, TLV(id, 2, v)...)
 		}

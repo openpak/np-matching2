@@ -108,6 +108,7 @@ type SearchItem struct {
 	Owner        string
 	OwnerCountry string
 	Attrs        RoomAttrs // the external bins and searchable ints the host set (0x4c-0x53, 0x55, 0x56)
+	Extra        []byte    // TLVs appended as they are (GetRoomDataExternalList: the owner info 0x0b, 0x0c, 0x0d the firmware asks for)
 }
 
 func (r SearchItem) element() []byte {
@@ -120,6 +121,7 @@ func (r SearchItem) element() []byte {
 	b = append(b, NpID(r.Owner, r.OwnerCountry)...)
 	b = append(b, TLV(0x41, 7, make([]byte, 32))...)
 	b = append(b, r.Attrs.externalItems()...)
+	b = append(b, r.Extra...)
 	return TLV(0x45, 0, b)
 }
 

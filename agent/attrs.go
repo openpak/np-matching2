@@ -114,10 +114,14 @@ func (a *Agent) roomDataExternalList(ctx context.Context, log *slog.Logger, t Ti
 		log.Error("matching2 external list", "err", err)
 		return nil
 	}
+	// The firmware sends each requested attribute id as (type nibble << 12 | id): the game's 0x55/0x56 arrive as 0x2055/0x2056, and the
+	// library adds the owner info it parses itself, 0x000b, 0x100c, 0x100d (NpId, name, avatar) and 0x206c (the host's external info).
+	// Matching on the raw value found none of the host's attributes, so the reply had no external bins, the game's check (exactly two,
+	// vsh item -> game list+0x54, EB 0xc96560 event 5) failed and the join silently went back to the list (2026-11-13 16:02Z).
 	want := map[uint16]bool{}
 	for _, v := range f.All(0x05) {
 		if len(v) == 2 {
-			want[binary.BigEndian.Uint16(v)] = true
+			want[binary.BigEndian.Uint16(v)&0xfff] = true
 		}
 	}
 	ids := f.All(0x3d)
@@ -128,7 +132,7 @@ func (a *Agent) roomDataExternalList(ctx context.Context, log *slog.Logger, t Ti
 		}
 		attrs := wire.RoomAttrs{Bin: map[uint16][]byte{}, Int: map[uint16]uint32{}}
 		for id, v := range r.Attrs.Bin {
-			if (id == wire.AttrExt1 || id == wire.AttrExt2) && (len(want) == 0 || want[id]) {
+			if (id == wire.AttrExt1 || id == wire.AttrExt2 || id == wire.AttrExtra) && (len(want) == 0 || want[id]) {
 				attrs.Bin[id] = v
 			}
 		}
@@ -137,7 +141,20 @@ func (a *Agent) roomDataExternalList(ctx context.Context, log *slog.Logger, t Ti
 				attrs.Int[id] = v
 			}
 		}
-		items = append(items, wire.SearchItem{RoomID: r.RoomID, MaxSlot: uint16(r.Max), Owner: a.onlineID(ctx, r.Owner), OwnerCountry: a.country(ctx, r.Owner), Attrs: attrs})
+		owner, country := a.onlineID(ctx, r.Owner), a.country(ctx, r.Owner)
+		it := wire.SearchItem{RoomID: r.RoomID, MaxSlot: uint16(r.Max), Owner: owner, OwnerCountry: country, Attrs: attrs}
+		if want[0x0b] {
+			it.Extra = append(it.Extra, wire.TLV(0x0b, 0, wire.NpID(owner, country))...)
+		}
+		if want[0x0c] {
+			name := make([]byte, 48)
+			copy(name, owner)
+			it.Extra = append(it.Extra, wire.TLV(0x0c, 1, name)...)
+		}
+		if want[0x0d] {
+			it.Extra = append(it.Extra, wire.TLV(0x0d, 1, nil)...)
+		}
+		items = append(items, it)
 	}
 	log.Info("matching2 external list", "requested", len(ids), "rooms", len(items), "attr_ids", len(want))
 	return wire.Reply(st.sess.Key, f.Cmd, 0, f.ReqID, wire.RoomDataExternalList(items))

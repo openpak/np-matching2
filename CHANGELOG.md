@@ -1,5 +1,25 @@
 # Changelog
 
+## v0.2.28
+
+Why a real PS3 joiner stopped after GetRoomDataExternalList on a Wii U-hosted game (prds#177; 2026-11-13 16:02Z, the owner's PS3Test
+selected WiiUTest's bridged room: `matching2 external list ... attr_ids=6`, then no GetServerInfo, no JoinRoom).
+
+- **The list reply carried no external bins.** The firmware sends every requested attribute id as `type nibble << 12 | id`: the game's
+  0x55 and 0x56 arrive as 0x2055 and 0x2056, plus four ids the library adds for the owner info it parses itself (0x000b NpId, 0x100c name,
+  0x100d avatar, 0x206c the host's external info). We matched the raw value against 0x55/0x56, found nothing, and answered with a room
+  that had no attributes. The game requires exactly two (list+0x54 == 2, EB 0xc96560 event 5), so it fails the request and returns to the
+  list without a message. Ids are now matched on their low 12 bits (the probe's plain 0x0055 still works). Our own probe asked with plain
+  ids, which is why it joined a real PS3 host on 2026-11-13 15:49.
+- The reply carries the owner info the library asked for: 0x0b NpId, 0x0c name (48 bytes), 0x0d (empty), as a member entry does.
+- **0x6c (the host's external info) is kept and echoed.** A real PS3 host sets 12 bytes in its 0x1202 (its public IPv4, four zero bytes,
+  `0a57 0007`, identical in all four hosts recorded); it is stored with the room's external attrs and returned to a joiner that asks for
+  0x206c, as the real service does. Bridged rooms have none (a Wii U host has no PS3 address to give).
+- Golden tests: `agent.TestExternalListForTheGamesOwnRequest` (the game's own six-id request against a bridged room: exactly two 92-byte
+  external bins, version 0x0884, +0xad and +0xaf non-zero, owner NpId, whole item pinned), `TestExternalInfoOfARealHostIsEchoed`,
+  `TestJoinReplyOfABridgedRoom` (member id, room id, 0x6d star, 0x57/0x58 table, the host flagged owner with NpId `WiiUTest` + `gbgbps3`
+  and 0x59 `00000001`, the owner member pinned).
+
 ## v0.2.27
 
 Why a PS3 host left its Terraria room 0.7 s after creating it under v0.2.26 (prds#145; research ps3/matching2-protocol.md §41).
